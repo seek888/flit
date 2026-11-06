@@ -157,7 +157,7 @@ class DesktopToolchain {
       if (!File(toolsBin).existsSync()) {
         final zip = '$cacheDir${_sep}cmdline-tools.zip';
         await _download(
-          'https://dl.google.com/android/repository/commandlinetools-win-$cmdlineToolsBuild_latest.zip',
+          'https://dl.google.com/android/repository/commandlinetools-win-${cmdlineToolsBuild}_latest.zip',
           zip,
           (got, total) => null,
         );

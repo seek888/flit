@@ -31,7 +31,7 @@ class DesktopShell {
     String cmd, {
     int timeoutMs = 120000,
   }) async {
-    final shimmed = _posixShim(cmd);
+    final shimmed = await _posixShim(cmd);
     if (shimmed != null) return shimmed;
     final shell = Platform.isWindows
         ? <String>['cmd.exe', '/c', cmd]
@@ -198,7 +198,7 @@ class DesktopShell {
   // Windows 没有这些内置命令，这里把「简单惯用法」翻译成 Dart 实现；
   // 复杂脚本（file_ops 的 realpath 门禁、编辑器读写）在调用方直接走 Dart 分支。
 
-  Map<String, dynamic>? _posixShim(String cmd) {
+  Future<Map<String, dynamic>?> _posixShim(String cmd) async {
     final c = cmd.trim();
 
     // command -v X >/dev/null 2>&1 || exit 127; X --version
@@ -215,7 +215,7 @@ class DesktopShell {
       final path = which(name) ?? name;
       final rest = c.split(';').last.trim();
       if (rest.startsWith(name) && rest.endsWith('--version')) {
-        return _runSimple(name, const <String>['--version']);
+        return await _runSimple(name, const <String>['--version']);
       }
       return <String, dynamic>{'exitCode': 0, 'output': path};
     }
