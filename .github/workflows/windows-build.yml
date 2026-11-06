@@ -1,0 +1,69 @@
+name: Windows Build
+
+# 目标：先让 Windows 版能编译出包。环境层（FlitEnv / POSIX 命令）的移植在后续提交里做。
+on:
+  push:
+    branches:
+      - 'windows/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Versions
+        run: |
+          flutter --version
+          flutter config --list
+
+      # Flit 仓库里只有 android/ 平台目录，Windows runner 在 CI 里生成
+      - name: Generate Windows runner
+        run: flutter create --platforms=windows --project-name flit --org cc.lycstar .
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Analyze (仅记录，不阻断)
+        continue-on-error: true
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings | Tee-Object -FilePath analyze.log
+
+      - name: Build Windows (release)
+        run: flutter build windows --release
+
+      - name: Package artifact
+        if: success()
+        shell: pwsh
+        run: |
+          $src = "build\windows\x64\runner\Release"
+          if (-not (Test-Path $src)) { throw "构建产物不存在: $src" }
+          Get-ChildItem $src | Select-Object Name, Length
+          Compress-Archive -Path "$src\*" -DestinationPath "$env:GITHUB_WORKSPACE\flit-windows-x64.zip" -Force
+          Get-Item "$env:GITHUB_WORKSPACE\flit-windows-x64.zip" | Select-Object Name, Length
+
+      - name: Upload artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flit-windows-x64
+          path: flit-windows-x64.zip
+          retention-days: 14
+
+      - name: Upload analyze log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: analyze-log
+          path: analyze.log
+          if-no-files-found: ignore
+          retention-days: 7
