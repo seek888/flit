@@ -59,6 +59,23 @@ jobs:
           path: flit-windows-x64.zip
           retention-days: 14
 
+      # 顺便发成 Release，方便直接点链接下载（不需要登录）
+      - name: Publish preview release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-preview-${{ github.run_number }}
+          name: Windows preview #${{ github.run_number }}
+          body: |
+            自动构建的 Windows 预览包（仅验证可编译/可启动）。
+
+            解压后运行 `flit.exe`。
+
+            已知：环境安装、构建 APK、ADB 等功能尚未移植到 Windows。
+          files: flit-windows-x64.zip
+          prerelease: true
+          draft: false
+
       - name: Upload analyze log
         if: always()
         uses: actions/upload-artifact@v4
