@@ -1,4 +1,8 @@
+import 'dart:io';
+
 import 'package:flit/l10n/strings.dart';
+
+import 'local_fs.dart';
 import 'shell.dart';
 
 /// File operation result.
@@ -58,6 +62,15 @@ class FileOps {
     String? sourceRoot,
     required String destinationRoot,
   }) async {
+    if (isDesktopPlatform) {
+      return _desktopTransfer(
+        src,
+        destDir,
+        move: move,
+        sourceRoot: sourceRoot,
+        destinationRoot: destinationRoot,
+      );
+    }
     final name = src.split('/').where((part) => part.isNotEmpty).lastOrNull;
     if (name == null) return fail(strings.invalidSourcePath);
     final target = _join(destDir, name);
@@ -89,6 +102,7 @@ class FileOps {
   }
 
   Future<OpResult> delete(String path, {required String allowedRoot}) async {
+    if (isDesktopPlatform) return _desktopDelete(path, allowedRoot);
     final root = allowedRoot;
     if (!_within(path, root) || _normalize(path) == _normalize(root)) {
       return fail(strings.onlyEntriesInsideTheCurrentProjectCan);
@@ -104,6 +118,7 @@ class FileOps {
     required String allowedRoot,
   }) async {
     if (!_validName(newName)) return fail(strings.invalidName);
+    if (isDesktopPlatform) return _desktopRename(path, newName, allowedRoot);
     final root = allowedRoot;
     final parent = path.substring(0, path.lastIndexOf('/'));
     final target = _join(parent, newName);
@@ -139,6 +154,9 @@ class FileOps {
     required String allowedRoot,
   }) async {
     if (!_validName(name)) return fail(strings.invalidName);
+    if (isDesktopPlatform) {
+      return _desktopCreate(parent, name, dir: dir, allowedRoot: allowedRoot);
+    }
     final root = allowedRoot;
     final target = _join(parent, name);
     if (!_within(parent, root) || !_within(target, root)) {
@@ -206,6 +224,115 @@ class FileOps {
         r'case "$p" in "$r"|"$r"/*) return 0;; *) '
         r'echo "拒绝操作项目根目录外路径: $p" >&2; return 1;; esac; }; '
         '$checks';
+  }
+
+  // ---------- 桌面端实现（无 bash，直接用 Dart 文件 API） ----------
+
+  static final String _sep = Platform.pathSeparator;
+
+  String _deskJoin(String parent, String name) =>
+      parent.endsWith(_sep) ? '$parent$name' : '$parent$_sep$name';
+
+  String _deskParent(String path) {
+    final i = path.lastIndexOf(_sep);
+    return i <= 0 ? path : path.substring(0, i);
+  }
+
+  Future<OpResult> _desktopTransfer(
+    String src,
+    String destDir, {
+    required bool move,
+    String? sourceRoot,
+    required String destinationRoot,
+  }) async {
+    final fs = LocalFs.instance;
+    final name = src
+        .split(RegExp(r'[\\/]'))
+        .where((p) => p.isNotEmpty)
+        .lastOrNull;
+    if (name == null || name.isEmpty) return fail(strings.invalidSourcePath);
+    final target = _deskJoin(destDir, name);
+    final fromRoot = sourceRoot ?? destinationRoot;
+    if (move && !fs.isInside(fromRoot, src)) {
+      return fail(strings.filesCannotBeMovedOutsideTheirProject);
+    }
+    if (!fs.isInside(destinationRoot, destDir) ||
+        !fs.isInside(destinationRoot, target)) {
+      return fail(strings.destinationMustBeInsideTheCurrentProject);
+    }
+    if (fs.isInside(src, destDir)) {
+      return fail(strings.cannotCopyOrMoveADirectoryInto);
+    }
+    if (fs.exists(target)) return fail('同名文件或目录已存在，未覆盖');
+    try {
+      if (move) {
+        fs.rename(src, target);
+      } else {
+        fs.copy(src, target);
+      }
+      return ok(strings.done);
+    } catch (e) {
+      return fail('$e');
+    }
+  }
+
+  Future<OpResult> _desktopDelete(String path, String allowedRoot) async {
+    final fs = LocalFs.instance;
+    if (!fs.isInside(allowedRoot, path) || fs.same(path, allowedRoot)) {
+      return fail(strings.onlyEntriesInsideTheCurrentProjectCan);
+    }
+    try {
+      fs.remove(path);
+      return ok(strings.done);
+    } catch (e) {
+      return fail('$e');
+    }
+  }
+
+  Future<OpResult> _desktopRename(
+    String path,
+    String newName,
+    String allowedRoot,
+  ) async {
+    final fs = LocalFs.instance;
+    final target = _deskJoin(_deskParent(path), newName);
+    if (!fs.isInside(allowedRoot, path) ||
+        !fs.isInside(allowedRoot, target) ||
+        fs.same(path, allowedRoot)) {
+      return fail(strings.renameIsOnlyAllowedWithinTheCurrent);
+    }
+    if (fs.exists(target)) return fail('同名文件或目录已存在');
+    try {
+      fs.rename(path, target);
+      return ok(strings.done);
+    } catch (e) {
+      return fail('$e');
+    }
+  }
+
+  Future<OpResult> _desktopCreate(
+    String parent,
+    String name, {
+    required bool dir,
+    required String allowedRoot,
+  }) async {
+    final fs = LocalFs.instance;
+    final target = _deskJoin(parent, name);
+    if (!fs.isInside(allowedRoot, parent) ||
+        !fs.isInside(allowedRoot, target)) {
+      return fail(strings.filesAndDirectoriesCanOnlyBeCreated);
+    }
+    if (fs.exists(target)) return fail('同名文件或目录已存在');
+    try {
+      if (dir) {
+        Directory(target).createSync(recursive: true);
+      } else {
+        File(target).createSync(recursive: true);
+      }
+      return ok(strings.done);
+    } catch (e) {
+      return fail('$e');
+    }
   }
 
   Future<OpResult> _exec(String command) async {

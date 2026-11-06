@@ -1,4 +1,6 @@
 import 'package:flit/l10n/strings.dart';
+
+import '../../services/desktop_toolchain.dart';
 import '../../services/shell.dart';
 import 'setup_runner.dart';
 import 'environment_controller.dart'
@@ -49,7 +51,38 @@ class EnvironmentStatus {
         const EnvironmentStatus(bootstrapped: false, checkFailed: true),
   );
 
+  /// 桌面端：直接查私有工具链目录，不跑 bash 脚本。
+  /// 输出与 check.sh 相同的 __STAGE__ 标记，UI 的阶段卡片照旧工作。
+  static Future<EnvironmentStatus> _inspectDesktop() async {
+    try {
+      final tc = DesktopToolchain();
+      final st = await tc.status();
+      final states = <String, bool>{
+        'android_jdk': st.jdk,
+        'android_ndk': true, // 桌面用官方 SDK；NDK 按需另装，不阻塞基本构建
+        'android_cmake': true,
+        'android_gradle': true, // Gradle Wrapper 自己下载到 GRADLE_USER_HOME
+        'android_sdk': st.androidSdk && st.aapt2 && st.platform,
+        'flutter_tools': true, // git/gh 走系统 git，缺了也不影响构建
+        'flutter_sdk': st.flutter,
+        'flutter_warmup': true,
+      };
+      final buf = StringBuffer();
+      states.forEach((id, ok) {
+        buf.writeln('__STAGE__$id:${ok ? 'DONE' : 'MISSING'}');
+      });
+      final allOk = states.values.every((v) => v);
+      return EnvironmentStatus.fromCheck(
+        exitCode: allOk ? 0 : 1,
+        output: buf.toString(),
+      );
+    } catch (_) {
+      return const EnvironmentStatus(bootstrapped: true, checkFailed: true);
+    }
+  }
+
   static Future<EnvironmentStatus> _inspect() async {
+    if (isDesktopPlatform) return _inspectDesktop();
     try {
       final status = await Shell.instance.bootstrapStatus();
       if (status['bootstrapped'] != true) {

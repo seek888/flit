@@ -37,6 +37,9 @@ class LocalFs {
     return p.startsWith('$r${Platform.pathSeparator}');
   }
 
+  /// 两个路径是否指向同一位置（Windows/macOS 忽略大小写）。
+  bool same(String a, String b) => _cmp(canonical(a)) == _cmp(canonical(b));
+
   /// 等价于 `[ -e p ] || [ -L p ]`。
   bool exists(String path) {
     try {
