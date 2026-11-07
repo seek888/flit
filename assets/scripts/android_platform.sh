@@ -1,4 +1,4 @@
-#!/data/data/cc.lycstar.flit/files/usr/bin/bash
+#!/data/data/com.seek888.flit/files/usr/bin/bash
 # Only architecture-independent Platform data may be installed from Google.
 . "$(dirname "$0")/lib.sh"
 init_stage android_platform

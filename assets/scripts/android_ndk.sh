@@ -1,4 +1,4 @@
-#!/data/data/cc.lycstar.flit/files/usr/bin/bash
+#!/data/data/com.seek888.flit/files/usr/bin/bash
 # Pkg.Revision 是安装目录名；SDK 通过软链接发现全部 ARM64 版本。
 . "$(dirname "$0")/lib.sh"
 init_stage android_ndk

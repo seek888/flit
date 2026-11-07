@@ -1,4 +1,4 @@
-#!/data/data/cc.lycstar.flit/files/usr/bin/bash
+#!/data/data/com.seek888.flit/files/usr/bin/bash
 # 子任务 2-4: CMake(aarch64 android 静态构建, bin 内置 ninja)。
 # AGP 对 externalNativeBuild 默认请求 cmake;3.22.1(flutter_pty 等原生插件);
 # 缺包时 AGP 会自动下载官方 Linux x86_64 版(设备上 Exec format error),
