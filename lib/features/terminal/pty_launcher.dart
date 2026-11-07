@@ -26,13 +26,14 @@ class PtyLauncher {
     required int rows,
     required int columns,
   }) async {
-    if (isDesktopPlatform)
+    if (isDesktopPlatform) {
       return _startDesktop(
         command: command,
         workingDirectory: workingDirectory,
         rows: rows,
         columns: columns,
       );
+    }
     final status = await Shell.instance.bootstrapStatus();
     final prefix = status['prefix'] as String? ?? '';
     final home = status['home'] as String? ?? '';

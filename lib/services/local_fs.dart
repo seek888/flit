@@ -67,7 +67,7 @@ class LocalFs {
   void writeText(String path, String content) {
     final target = File(path);
     target.parent.createSync(recursive: true);
-    final tmp = File('${path}.tmp-${DateTime.now().microsecondsSinceEpoch}');
+    final tmp = File('$path.tmp-${DateTime.now().microsecondsSinceEpoch}');
     tmp.writeAsStringSync(content);
     try {
       if (target.existsSync()) target.deleteSync();

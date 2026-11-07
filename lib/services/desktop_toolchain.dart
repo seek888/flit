@@ -1,18 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 /// 桌面端（Windows 优先）工具链管理：
 /// 所有东西只落在应用私有目录里，不写注册表、不改系统 PATH。
 ///
 /// 目录布局：
-///   <home>/jdk/            Temurin 17（解压版）
-///   <home>/android-sdk/    cmdline-tools + platform-tools + platforms + build-tools
-///   <home>/flutter/        官方 Flutter SDK（给用户项目用）
-///   <home>/gradle-home/    GRADLE_USER_HOME
-///   <home>/pub-cache/      PUB_CACHE
-///   <home>/projects/       工程
-///   <home>/cache/          下载缓存
+///   `<home>/jdk/`            Temurin 17（解压版）
+///   `<home>/android-sdk/`    cmdline-tools + platform-tools + platforms + build-tools
+///   `<home>/flutter/`        官方 Flutter SDK（给用户项目用）
+///   `<home>/gradle-home/`    GRADLE_USER_HOME
+///   `<home>/pub-cache/`      PUB_CACHE
+///   `<home>/projects/`       工程
+///   `<home>/cache/`          下载缓存
 class DesktopToolchain {
   DesktopToolchain({String? home}) : home = home ?? defaultHome();
 
@@ -49,8 +50,8 @@ class DesktopToolchain {
 
   String get _sep => Platform.pathSeparator;
 
-  String get javaExe => '$jdkDir${_sep}bin${_sep}java${_exe}';
-  String get adbExe => '$sdkDir${_sep}platform-tools${_sep}adb${_exe}';
+  String get javaExe => '$jdkDir${_sep}bin${_sep}java$_exe';
+  String get adbExe => '$sdkDir${_sep}platform-tools${_sep}adb$_exe';
   String get flutterExe => '$flutterDir${_sep}bin${_sep}flutter$_bat';
   String get gitExe => '$gitDir${_sep}cmd${_sep}git$_exe';
   String get gitCmdDir => '$gitDir${_sep}cmd';
@@ -85,9 +86,9 @@ class DesktopToolchain {
     final jdkOk = await _canRun(javaExe, const <String>['-version']);
     final adbOk = await _canRun(adbExe, const <String>['version']);
     final aapt2 =
-        '$sdkDir${_sep}build-tools${_sep}$defaultBuildTools${_sep}aapt2$_exe';
+        '$sdkDir${_sep}build-tools$_sep$defaultBuildTools${_sep}aapt2$_exe';
     final jar =
-        '$sdkDir${_sep}platforms${_sep}$defaultPlatform${_sep}android.jar';
+        '$sdkDir${_sep}platforms$_sep$defaultPlatform${_sep}android.jar';
     final flutterOk = await _canRun(flutterExe, const <String>['--version']);
     final gitOk =
         File(gitExe).existsSync() ||
@@ -138,7 +139,7 @@ class DesktopToolchain {
       await _download(
         'https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jdk/hotspot/normal/eclipse',
         zip,
-        (got, total) => null,
+        (got, total) {},
       );
       yield '解压 JDK ...';
       final tmp = '$cacheDir${_sep}jdk-tmp';
@@ -167,7 +168,7 @@ class DesktopToolchain {
         await _download(
           'https://dl.google.com/android/repository/commandlinetools-win-${cmdlineToolsBuild}_latest.zip',
           zip,
-          (got, total) => null,
+          (got, total) {},
         );
         final tmp = '$cacheDir${_sep}tools-tmp';
         _rmrf(tmp);
@@ -214,7 +215,7 @@ class DesktopToolchain {
           yield '无法解析 MinGit 下载地址，跳过（克隆/Git 面板将不可用）';
         } else {
           final zip = '$cacheDir${_sep}mingit.zip';
-          await _download(url, zip, (got, total) => null);
+          await _download(url, zip, (got, total) {});
           final tmp = '$cacheDir${_sep}git-tmp';
           _rmrf(tmp);
           _extract(zip, tmp);
@@ -234,7 +235,7 @@ class DesktopToolchain {
           yield '无法解析 Flutter 版本清单';
         } else {
           final zip = '$cacheDir${_sep}flutter.zip';
-          await _download(ver, zip, (got, total) => null);
+          await _download(ver, zip, (got, total) {});
           yield '解压 Flutter（约 1 GB，慢一点）...';
           final tmp = '$cacheDir${_sep}flutter-tmp';
           _rmrf(tmp);
@@ -352,8 +353,9 @@ class DesktopToolchain {
         sink: file.openWrite(),
       );
       if (bytes.isEmpty) throw StateError('下载为空: $url');
-      if (file.existsSync() && file.lengthSync() < 1024)
+      if (file.existsSync() && file.lengthSync() < 1024) {
         throw StateError('下载过小: $url');
+      }
     } finally {
       client.close(force: true);
     }
@@ -476,7 +478,7 @@ class ToolchainStatus {
   };
 
   String get summary =>
-      'Git ${git ? 'OK' : '缺失'} / ' +
+      'Git ${git ? 'OK' : '缺失'} / '
       'JDK ${jdk ? 'OK' : '缺失'} / SDK ${androidSdk ? 'OK' : '缺失'} / '
           'aapt2 ${aapt2 ? 'OK' : '缺失'} / platform ${platform ? 'OK' : '缺失'} / '
           'Flutter ${flutter ? 'OK' : '缺失'}';

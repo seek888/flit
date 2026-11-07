@@ -86,9 +86,10 @@ class DesktopShell {
     for (final dir in path.split(sep)) {
       if (dir.trim().isEmpty) continue;
       final hit = _existsBinary(dir, name);
-      if (hit)
+      if (hit) {
         return _join(dir, name) +
             (Platform.isWindows && !name.contains('.') ? '.exe' : '');
+      }
     }
     return null;
   }
@@ -114,8 +115,9 @@ class DesktopShell {
         if (Platform.isWindows) {
           if (lower == '$name.exe' ||
               lower == '$name.bat' ||
-              lower == '$name.cmd')
+              lower == '$name.cmd') {
             return e.path;
+          }
         } else if (leaf == name) {
           return e.path;
         }
