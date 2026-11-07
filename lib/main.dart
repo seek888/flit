@@ -11,6 +11,7 @@ import 'features/terminal/pty_launcher.dart';
 import 'features/terminal/pty_session.dart';
 import 'features/workspace/project_session.dart';
 import 'services/auto_proxy.dart';
+import 'services/shell.dart';
 import 'l10n/strings.dart';
 import 'l10n/app_localizations.dart';
 
@@ -63,15 +64,19 @@ Future<AppServices> composeApp() async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final services = await composeApp();
-  // 沉浸式: 状态栏/导航栏透明融入页面(深色应用配浅色图标)
-  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-      systemNavigationBarColor: Colors.transparent,
-      systemNavigationBarIconBrightness: Brightness.light,
-    ),
-  );
+  // 沉浸式: 状态栏/导航栏透明融入页面(深色应用配浅色图标)。
+  // 桌面端没有系统状态栏/导航栏，这两个调用在 Windows/macOS/Linux 上是无意义的
+  // 平台通道调用，跳过以免产生噪声日志。
+  if (!isDesktopPlatform) {
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setSystemUIOverlayStyle(
+      const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarIconBrightness: Brightness.light,
+      ),
+    );
+  }
   runApp(AppScope(services: services, child: const FlitApp()));
 }
