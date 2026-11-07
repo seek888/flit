@@ -69,12 +69,15 @@ Windows 版**不依赖**你预先安装 Flutter/Android SDK/JDK，也**不会**�
 
 ## 4. 编辑、终端与语言服务
 
-- 编辑器：语法高亮、补全、诊断来自 Dart 分析服务器（Windows 上通过本地
-  `dart language-server --protocol=lsp` 进程通信，不再走 Android 原生通道）。
+- 编辑器：语法高亮与文件编辑可用。**Dart 语言服务（补全/诊断/签名帮助）在 Windows
+  首版尚未接入**：`flit_lsp` 是 Android 原生通道，桌面端暂时显示「语言服务不可用」，
+  编辑器降到纯编辑模式（后续版本会用本地 `dart language-server` 进程替代）。
 - 终端：交互式终端用 Windows **ConPTY**（`flutter_pty`）跑 `cmd.exe`；一次性命令
   （构建、Git、pub 等）走参数数组进程，不做 shell 字符串拼接。为兼容历史命令，
-  `lib/services/console_command.dart` 负责把 POSIX 形状的命令归一成 cmd 语法；
-  含有非 ASCII 路径时若 PTY 启动受限，会降级为管道会话。
+  `lib/services/console_command.dart` 负责把 POSIX 形状的命令归一成 cmd 语法。
+  注意：`flutter_pty` 0.4.2 的 Windows 实现按字节处理环境变量与工作目录，
+  **用户目录/工程路径含中文时终端可能启动失败**——首版请把工具链与工程放在
+  纯英文路径下（`%LOCALAPPDATA%\FlitDesk` 对英文用户名是安全的）。
 - 文件树：桌面端显示工程内全部文件（含 `.gitignore`/`.metadata` 等点文件），
   「共享存储」页签是 Android 专属，桌面隐藏；浏览根为 `%USERPROFILE%`。
 - 快捷键与非触摸交互：编辑器内使用键盘；双指缩放是触摸专属，桌面请用设置里的字号。
@@ -135,6 +138,9 @@ Windows 版**不依赖**你预先安装 Flutter/Android SDK/JDK，也**不会**�
 - **窗口尺寸/位置记忆**：窗口默认 1280×800、最小 960×640（按 DPI 缩放），暂不记忆上次位置。
 - **自更新**：「检查更新」可下载新版本产物，但暂不自动替换运行中的程序。
 - **l10n**：部分桌面新增文案目前是中文硬编码（随版本逐步迁入 ARB）。
+- **跳过预热**：离线导致 `flutter --version` 预热失败时，环境页暂没有「跳过预热」按钮
+  （API 已提供 `EnvironmentController.skipWarmup()`），需要联网完成一次预热才能就绪。
+- **Dart 语言服务 / LSP**：Windows 首版不可用（见第 4 节）。
 - **Linux/macOS**：桌面代码路径共用，但当前未做交付验证；部分下载源按 Windows 资产。
 
 ## 9. 从源码构建（Windows）
