@@ -162,6 +162,28 @@ CI：`.github/workflows/windows-build.yml` 负责 `analyze → test → build wi
 用最小工程真跑 `flutter build web` 与 `flutter build apk`，证明宿主构建链可用。
 Android APP 自身的发布仍在 `.github/workflows/android-release.yml`，两者互不影响。
 
+## 9.5 验证状态（这个分支实际跑过什么）
+
+| 项目 | 结果 | 说明 |
+| --- | --- | --- |
+| `flutter analyze`（windows-latest，Flutter 3.47.8） | ✅ 0 issue | 新增 desktop 代码与测试全部通过 |
+| `flutter build windows --release` | ✅ | 产物含 `flit.exe`、`flutter_windows.dll`、`flutter_pty.dll`、运行库 DLL |
+| Inno Setup 安装包 | ✅ | `FlitSetup-1.0.0-preview.2-x64.exe`（per-user，含中文向导）随 Release 发布 |
+| Windows 宿主构建链冒烟 | ✅ | 在 windows-latest 上用最小 Flutter 工程真跑 `flutter build web --release` 与 `flutter build apk --debug`，产物存在 |
+| Android APK 发布工作流 | ✅ 未改动 | `android-release.yml` 保持原样，只共享 Flutter 版本号 |
+| 全量 `flutter test` | 414 passed / 17 failed / 3 skipped | 失败项是平台假设差异（非阻断）；见下 |
+
+**没有在真机 Windows 上验证过的**（本仓库的 CI 跑在 GitHub 托管的 Windows 虚拟机上，
+没有交互式桌面与真实网络/杀软环境）：
+
+- 首次「一键安装」的完整下载/解压/预热流程（约 2~3 GB，依赖你到 GitHub/Flutter/Google/Adoptium 的网络）。
+- 安装后 `flutter build apk` 从 Flit UI 触发的端到端流程（命令行链路已由冒烟 job 证明）。
+- 终端 ConPTY 的交互体验、中文路径限制（见第 4 节）。
+- 安装包在普通用户机器上的安装/卸载体验、SmartScreen 提示。
+
+建议按「安装版 → 开发环境一键安装 → 新建工程 → 提交到 GitHub → 构建 APK/Web」
+的顺序在真机上走一遍，再把问题反馈到 Issues。
+
 ## 10. 排障
 
 | 症状 | 处理 |

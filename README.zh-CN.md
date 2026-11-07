@@ -1,5 +1,6 @@
 <p align="center">
   <img src="assets/branding/logo.png" alt="Flit" width="112" height="112" />
+  <a href="https://github.com/seek888/flit/actions/workflows/windows-build.yml"><img src="https://github.com/seek888/flit/actions/workflows/windows-build.yml/badge.svg" alt="Windows Build" /></a>
 </p>
 
 <h1 align="center">Flit</h1>
