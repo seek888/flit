@@ -27,7 +27,7 @@ class ToolchainCatalog {
   );
   static const packagesRepo = String.fromEnvironment(
     'FLIT_PACKAGES_REPO',
-    defaultValue: 'lycstar/flit-termux-packages',
+    defaultValue: 'seek888/flit-termux-packages',
   );
   static const sdkVersion = '36.0.0';
   static const platformVersion = '36';
