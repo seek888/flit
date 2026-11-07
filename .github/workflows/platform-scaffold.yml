@@ -1,0 +1,54 @@
+name: Platform Scaffold (temporary)
+
+# 临时工作流：在 Windows runner 上用 Flutter 3.47.8 生成 windows/ 与 web/ 平台目录，
+# 作为 artifact 供仓库直接提交（仓库原本只有 android/ 平台目录）。
+# 拿到产物后本文件会被删除。
+on:
+  push:
+    branches:
+      - 'windows/full-desktop'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scaffold:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.8
+          cache: true
+
+      - name: Generate platforms
+        shell: pwsh
+        run: |
+          flutter --version
+          flutter create --platforms=windows,web --project-name flit --org cc.lycstar .
+          git status --porcelain | Out-File -Encoding utf8 status.txt
+          git diff --stat | Out-File -Encoding utf8 -Append diffstat.txt
+          Get-Content status.txt
+          Get-Content diffstat.txt
+
+      - name: Show generated tree
+        shell: pwsh
+        run: |
+          Get-ChildItem windows -Recurse -File | Select-Object FullName, Length | Format-Table -AutoSize
+          Get-ChildItem web -Recurse -File | Select-Object FullName, Length | Format-Table -AutoSize
+
+      - name: Package scaffold
+        shell: pwsh
+        run: |
+          Compress-Archive -Path windows,web,.metadata,status.txt,diffstat.txt -DestinationPath platform-scaffold.zip -Force
+          Get-Item platform-scaffold.zip | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: platform-scaffold
+          path: platform-scaffold.zip
+          retention-days: 7
