@@ -1,4 +1,4 @@
-#!/data/data/cc.lycstar.flit/files/usr/bin/bash
+#!/data/data/com.seek888.flit/files/usr/bin/bash
 # ARM64 主机策略独立于项目及 SDK/NDK 版本；由 Gradle init.d 在项目加载前生效。
 . "$(dirname "$0")/lib.sh"
 init_stage android_gradle

@@ -28,7 +28,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "cc.lycstar.flit"
+        applicationId = "com.seek888.flit"
         // Termux 环境要求: exec 数据目录二进制需要 targetSdk<=28;
         // pty/bootstrap 依赖 minSdk 24
         minSdk = 24

@@ -10,7 +10,7 @@ if [ -f "$HOME/.flit/env.sh" ]; then
     exit 1
   }
 fi
-: "${PREFIX:=/data/data/cc.lycstar.flit/files/usr}"
+: "${PREFIX:=/data/data/com.seek888.flit/files/usr}"
 : "${FLIT_TOOLCHAINS:=$HOME/toolchains}"
 : "${ANDROID_HOME:=$FLIT_TOOLCHAINS/android-sdk}"
 : "${JAVA_HOME:=$PREFIX/lib/jvm/java-17-openjdk}"

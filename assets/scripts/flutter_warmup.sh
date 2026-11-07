@@ -1,4 +1,4 @@
-#!/data/data/cc.lycstar.flit/files/usr/bin/bash
+#!/data/data/com.seek888.flit/files/usr/bin/bash
 # 子任务 3-3: 预热——首次 flutter --version 会构建 flutter_tools 快照并拉取
 # Dart SDK / 引擎组件(需要网络), 之后的新建/运行才不会卡在"首次初始化"。
 # 中断与重试: flutter 自己用 bin/cache 的 stamp 文件管下载完整性, 半截下载下次重拉,

@@ -25,7 +25,7 @@ English · [简体中文](README.zh-CN.md)
 
 Edit Dart code, build applications on the device, run them over wireless ADB, or preview Flutter Web in the editor.
 
-Application ID: `cc.lycstar.flit` · Android 7.0+ · arm64-v8a
+Application ID: `com.seek888.flit` · Android 7.0+ · arm64-v8a
 
 ## Features
 
@@ -112,7 +112,7 @@ The release workflow runs manually. Configure `KEYSTORE_BASE64`, `ANDROID_STORE_
 
 ## Runtime distributions
 
-The application keeps only repository and default-version rules; installation resolves download assets and SHA-256 digests from GitHub Releases by tag. No download manifest is bundled. Bootstrap and APT packages must be compiled for `/data/data/cc.lycstar.flit/files/usr`. Changing a URL or application ID does not relocate another application’s binaries.
+The application keeps only repository and default-version rules; installation resolves download assets and SHA-256 digests from GitHub Releases by tag. No download manifest is bundled. Bootstrap and APT packages must be compiled for `/data/data/com.seek888.flit/files/usr`. Changing a URL or application ID does not relocate another application’s binaries. This fork changes the application ID: binaries from the upstream [lycstar/flit](https://github.com/lycstar/flit) companion repositories are compiled for the old prefix, so installing the on-device environment requires rebuilding the companion toolchains for the new prefix.
 
 | Companion repository | Responsibility |
 | --- | --- |

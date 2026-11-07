@@ -16,7 +16,7 @@
 
 默认 SDK 为 `sdk-36.0.0/android-sdk.tar.xz`，包含 Build Tools 36.0.0 和 Platform 36。默认 Flutter、NDK、CMake 和 bootstrap 也通过各自固定 tag 查询。固定版本用于保持兼容，不使用 `/latest` 随发布顺序自动升级。
 
-`SetupRunner` 在本地生成 `$HOME/.flit/env.sh`，只注入运行路径、默认版本和按仓库规则拼接的 APT 源。环境探测、打开终端和切换已安装版本不联网；安装地址和摘要通过命令参数传给脚本，不写回一份下载清单。bootstrap 和 APT 软件包必须适配 `/data/data/cc.lycstar.flit/files/usr`，宿主工具必须适配 Android bionic aarch64。SHA-256 不代表架构兼容。
+`SetupRunner` 在本地生成 `$HOME/.flit/env.sh`，只注入运行路径、默认版本和按仓库规则拼接的 APT 源。环境探测、打开终端和切换已安装版本不联网；安装地址和摘要通过命令参数传给脚本，不写回一份下载清单。bootstrap 和 APT 软件包必须适配 `/data/data/com.seek888.flit/files/usr`，宿主工具必须适配 Android bionic aarch64。SHA-256 不代表架构兼容。
 
 ## 版本目录
 

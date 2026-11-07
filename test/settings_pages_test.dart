@@ -39,7 +39,7 @@ void main() {
         return {
           'exitCode': 0,
           'output':
-              'HOME=/data/user/0/cc.lycstar.flit/files/home\x00JAVA_HOME=/prefix/lib/jvm/java-17-openjdk\x00PATH=/prefix/bin:/system/bin\x00SPECIAL=value=one\nsecond line\x00',
+              'HOME=/data/user/0/com.seek888.flit/files/home\x00JAVA_HOME=/prefix/lib/jvm/java-17-openjdk\x00PATH=/prefix/bin:/system/bin\x00SPECIAL=value=one\nsecond line\x00',
         };
       }
       if (command.toString().endsWith('adb devices -l')) {

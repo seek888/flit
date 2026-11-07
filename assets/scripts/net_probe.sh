@@ -1,4 +1,4 @@
-#!/data/data/cc.lycstar.flit/files/usr/bin/bash
+#!/data/data/com.seek888.flit/files/usr/bin/bash
 # 网络检测: 三个目标各管一件事
 #   Google(generate_204) = 全球出网能力(自动代理开关的直观指示灯)
 #   GitHub               = 工具链源直连(git/apt pool 所在)

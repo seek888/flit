@@ -25,7 +25,7 @@
 
 Flit 支持编辑 Dart 代码、在设备上构建应用、通过无线 ADB 运行应用，以及在编辑器内预览 Flutter Web。
 
-应用 ID：`cc.lycstar.flit` · Android 7.0+ · arm64-v8a
+应用 ID：`com.seek888.flit` · Android 7.0+ · arm64-v8a
 
 ## 功能
 
@@ -112,7 +112,7 @@ flutter build apk --debug --target-platform android-arm64
 
 ## 运行环境分发
 
-应用只保留仓库和默认版本，安装时按 tag 从 GitHub API 获取下载资产与 SHA-256，不内置下载清单。bootstrap 和 APT 软件包必须针对 `/data/data/cc.lycstar.flit/files/usr` 编译。修改下载地址或应用 ID，不能迁移为其他应用编译的二进制文件中的路径。
+应用只保留仓库和默认版本，安装时按 tag 从 GitHub API 获取下载资产与 SHA-256，不内置下载清单。bootstrap 和 APT 软件包必须针对 `/data/data/com.seek888.flit/files/usr` 编译。修改下载地址或应用 ID，不能迁移为其他应用编译的二进制文件中的路径。本 fork 已修改应用 ID：上游 [lycstar/flit](https://github.com/lycstar/flit) 配套仓库的二进制按旧前缀编译，在应用内安装开发环境需自行按新前缀重建配套工具链。
 
 | 配套仓库 | 职责 |
 | --- | --- |

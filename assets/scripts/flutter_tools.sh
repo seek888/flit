@@ -1,4 +1,4 @@
-#!/data/data/cc.lycstar.flit/files/usr/bin/bash
+#!/data/data/com.seek888.flit/files/usr/bin/bash
 # 子任务 3-2: Git 与 gh(GitHub CLI)。Flutter 工具强制依赖 Git; gh 提供 Device Flow
 # 登录与 git 凭据助手, 私库克隆/推送靠它非交互完成。
 # 中断与重试: 缺哪个装哪个(git 装好、gh 断网失败时重试只装 gh);

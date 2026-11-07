@@ -1,4 +1,4 @@
-#!/data/data/cc.lycstar.flit/files/usr/bin/bash
+#!/data/data/com.seek888.flit/files/usr/bin/bash
 # 子任务 2-1: OpenJDK 17(自家 APT 源; 软件源只在安装动作中配置)。
 # 中断与重试: apt 更新/安装被打断会留下 half-configured 包 → apt_repair 先补;
 # 装了一半的 java 可能存在但不可运行 → 判据是"能出版本", 不行就当未装重装。

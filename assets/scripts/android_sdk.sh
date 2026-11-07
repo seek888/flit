@@ -1,4 +1,4 @@
-#!/data/data/cc.lycstar.flit/files/usr/bin/bash
+#!/data/data/com.seek888.flit/files/usr/bin/bash
 # 固定 SDK 根目录，平台和 Build Tools 按版本累加；NDK/CMake 独立管理。
 . "$(dirname "$0")/lib.sh"
 init_stage android_sdk

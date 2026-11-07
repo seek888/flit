@@ -64,7 +64,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
     final home = (status['home'] as String? ?? '').trim();
     final root = home.isNotEmpty
         ? '$home/projects'
-        : '/data/user/0/cc.lycstar.flit/files/home/projects';
+        : '/data/user/0/com.seek888.flit/files/home/projects';
     if (!mounted) return;
     final projects = ProjectList(
       root: root,

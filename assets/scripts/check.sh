@@ -1,4 +1,4 @@
-#!/data/data/cc.lycstar.flit/files/usr/bin/bash
+#!/data/data/com.seek888.flit/files/usr/bin/bash
 # 环境状态检查: 逐个子任务调 --check(各脚本的 probe, 零副作用)。
 # "算不算装好"的判据与安装逻辑写在同一个脚本里, 这里不再维护第二套。
 set -uo pipefail

@@ -1,4 +1,4 @@
-#!/data/data/cc.lycstar.flit/files/usr/bin/bash
+#!/data/data/com.seek888.flit/files/usr/bin/bash
 # Flutter 按版本并存，current 是终端、构建与分析器的统一入口。
 . "$(dirname "$0")/lib.sh"
 init_stage flutter_sdk

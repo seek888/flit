@@ -1,4 +1,4 @@
-#!/data/data/cc.lycstar.flit/files/usr/bin/bash
+#!/data/data/com.seek888.flit/files/usr/bin/bash
 # 只读探测：协议输出给 AndroidBuildWrapper，不下载、不接受许可证、不改项目。
 . "$(dirname "$0")/lib.sh"
 missing() { printf '__MISSING__%s:%s\n' "$1" "${2:-}"; }
