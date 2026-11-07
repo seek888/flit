@@ -1,10 +1,12 @@
 import 'package:flit/l10n/strings.dart';
+
 import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 
+import '../../services/local_fs.dart';
 import '../../services/shell.dart';
 import '../editor/controller/code_controller.dart';
 import '../editor/highlighting/highlighter.dart';
@@ -108,6 +110,14 @@ class ProjectDocuments extends ChangeNotifier {
 
   Future<String?> _readFile(String path) async {
     if (_relativePath(path) == null) throw StateError(strings.invalidFilePath);
+    if (isDesktopPlatform) {
+      final fs = LocalFs.instance;
+      if (!fs.exists(path)) return null;
+      if (!fs.isInside(projectPath, path)) {
+        throw StateError(strings.fileIsUnreadableOrOutsideTheProject);
+      }
+      return fs.readText(path);
+    }
     final result = await Shell.instance.exec(
       'root=\$(realpath -e -- ${shQuote(projectPath)}) || exit 64; '
       'if [ ! -e ${shQuote(path)} ] && [ ! -L ${shQuote(path)} ]; then exit 44; fi; '
@@ -132,6 +142,12 @@ class ProjectDocuments extends ChangeNotifier {
     final doc = _documents[relative]!;
     doc.externalChange = await _readFile(path) != doc.savedText;
     if (doc.externalChange) return false;
+    if (isDesktopPlatform) {
+      final fs = LocalFs.instance;
+      if (!fs.isInside(projectPath, path) || !fs.isFile(path)) return false;
+      fs.writeText(path, text);
+      return true;
+    }
     final encoded = base64.encode(utf8.encode(text));
     final result = await Shell.instance.exec(
       'root=\$(realpath -e -- ${shQuote(projectPath)}) || exit 64; '

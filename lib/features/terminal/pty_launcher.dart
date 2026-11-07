@@ -1,10 +1,12 @@
 import 'package:flit/l10n/strings.dart';
+
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 
 import '../../services/auto_proxy.dart';
+import '../../services/desktop_toolchain.dart';
 import '../../services/shell.dart';
 import 'console_session.dart';
 import 'session_environment.dart';
@@ -24,6 +26,13 @@ class PtyLauncher {
     required int rows,
     required int columns,
   }) async {
+    if (isDesktopPlatform)
+      return _startDesktop(
+        command: command,
+        workingDirectory: workingDirectory,
+        rows: rows,
+        columns: columns,
+      );
     final status = await Shell.instance.bootstrapStatus();
     final prefix = status['prefix'] as String? ?? '';
     final home = status['home'] as String? ?? '';
@@ -51,6 +60,37 @@ class PtyLauncher {
   }
 }
 
+extension on PtyLauncher {
+  /// 桌面端：Windows 用 cmd.exe，类 Unix 用 /bin/sh；环境注入私有工具链。
+  /// 注意 Android 那条路径依赖 Termux 的 bash，桌面端没有它。
+  Future<SessionProcess> _startDesktop({
+    required String? command,
+    required String? workingDirectory,
+    required int rows,
+    required int columns,
+  }) async {
+    final tc = DesktopToolchain();
+    final win = Platform.isWindows;
+    final exe = win ? 'cmd.exe' : '/bin/sh';
+    final args = command == null
+        ? (win ? const <String>['/K'] : const <String>['-i'])
+        : (win ? <String>['/c', command] : <String>['-c', command]);
+    final env = Map<String, String>.from(tc.childEnvironment);
+    env.addAll(proxy.envVars());
+    env['TERM'] = 'xterm-256color';
+    return _PtyProcess(
+      Pty.start(
+        exe,
+        arguments: args,
+        workingDirectory: workingDirectory ?? tc.home,
+        environment: env,
+        rows: rows,
+        columns: columns,
+      ),
+    );
+  }
+}
+
 class _PtyProcess implements SessionProcess {
   _PtyProcess(this.pty);
   final Pty pty;
@@ -65,8 +105,15 @@ class _PtyProcess implements SessionProcess {
   void resize(int rows, int columns) => pty.resize(rows, columns);
   @override
   void kill() {
-    // forkpty creates a new session/process group. Stop its children as well.
-    Process.killPid(-pty.pid, ProcessSignal.sigkill);
-    pty.kill(ProcessSignal.sigkill);
+    // forkpty 在类 Unix 上建了新会话/进程组，要连子进程一起停；
+    // Windows 用的是 ConPTY，没有进程组否定 pid 这套语义。
+    if (!Platform.isWindows) {
+      try {
+        Process.killPid(-pty.pid, ProcessSignal.sigkill);
+      } catch (_) {}
+    }
+    try {
+      pty.kill(ProcessSignal.sigkill);
+    } catch (_) {}
   }
 }

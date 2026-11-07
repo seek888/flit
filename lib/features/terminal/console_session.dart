@@ -1,6 +1,8 @@
 import 'package:flit/l10n/strings.dart';
+
 import 'dart:async';
 import 'dart:convert' as convert;
+import 'dart:io';
 
 import 'package:flutter/material.dart' show ScrollController;
 import 'package:flutter/foundation.dart';
@@ -9,6 +11,7 @@ import 'package:flutter/services.dart';
 import 'package:flit_work/flit_work.dart';
 import 'package:xterm/xterm.dart';
 
+import '../../services/shell.dart';
 import 'terminal_log.dart';
 
 enum ExecutionState { idle, starting, running, stopping, exited, failed }
@@ -24,13 +27,12 @@ abstract interface class SessionProcess {
 
 /// How a console obtains its process. Production wires PtyLauncher in from the
 /// composition root; nothing in this layer knows how to start a PTY by itself.
-typedef ProcessLauncher =
-    Future<SessionProcess> Function({
-      required String? command,
-      required String? workingDirectory,
-      required int rows,
-      required int columns,
-    });
+typedef ProcessLauncher = Future<SessionProcess> Function({
+  required String? command,
+  required String? workingDirectory,
+  required int rows,
+  required int columns,
+});
 
 /// 三类会话(与 AS 的 Terminal / Run / 命令控制台对应):
 /// shell 默认 bash: 永远在, 唯一可输入; run: 跑起来才有, 能停(⏹, 输出留着)能删(✕);
@@ -110,6 +112,45 @@ class ConsoleSession extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 把 POSIX 的单引号转成 cmd 能识别的双引号。
+  /// Flit 里所有参数都过 shQuote，桌面上要换成 "..."；内部双引号做转义。
+  static String _cmdQuotes(String command) {
+    return command.replaceAllMapped(RegExp(r"'([^']*)'"), (m) {
+      final inner = m.group(1)!.replaceAll('"', r'\"');
+      return '"$inner"';
+    });
+  }
+
+  /// 桌面端命令归一化：把 Android 专属的 bash 包装剥掉。
+  static String? _normalizeForDesktop(String? command) {
+    if (command == null || !isDesktopPlatform) return command;
+    var c = command.trimLeft();
+    c = c.replaceFirst(RegExp(r'^bash\s+"[^"]*android_build\.sh"\s+'), '');
+
+    if (Platform.isWindows) {
+      // mkdir -p 'X' && cd 'X' && rest  →  cmd 的等价写法
+      final mk = RegExp(
+        r'''^mkdir\s+-p\s+'([^']*)'\s*&&\s*cd\s+'[^']*'\s*&&\s*(.+)$''',
+        dotAll: true,
+      ).firstMatch(c);
+      if (mk != null) {
+        final dir = mk.group(1)!;
+        final rest = _cmdQuotes(mk.group(2)!);
+        c = 'if not exist "$dir" mkdir "$dir" & cd /d "$dir" && $rest';
+      } else {
+        c = _cmdQuotes(c);
+      }
+      return c;
+    }
+    c = c.replaceFirst(
+      RegExp(
+        r'''^if \[ -f "\$HOME/\.flit/env\.sh" \]; then \. "\$HOME/\.flit/env\.sh" \|\| exit \$\?; fi;\s*''',
+      ),
+      '',
+    );
+    return c;
+  }
+
   Future<void> start({
     String? command,
     String? displayCommand,
@@ -122,6 +163,8 @@ class ConsoleSession extends ChangeNotifier {
     }
     if (_starting != null) return _starting!;
     if (alive) return Future.value();
+    // 桌面端：没有 bash，也不需要 android_build.sh 的 aapt2 覆盖与环境 source。
+    command = _normalizeForDesktop(command);
     if (command != null && command.trim().isNotEmpty) {
       log.info('\$ ${displayCommand ?? command}');
     }

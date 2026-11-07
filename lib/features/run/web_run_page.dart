@@ -1,4 +1,5 @@
 import 'package:flit/l10n/strings.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -7,7 +8,59 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../core/theme.dart';
 import '../editor/workbench_layout.dart';
+import '../../services/shell.dart';
 import 'web_runner.dart';
+
+/// 桌面端的 Web 预览降级面板：Windows/Linux 没有 webview 实现。
+class _DesktopPreviewFallback extends StatelessWidget {
+  const _DesktopPreviewFallback({
+    required this.url,
+    required this.onShowOutput,
+  });
+
+  final String url;
+  final VoidCallback onShowOutput;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(Icons.language, size: 40, color: theme.colorScheme.primary),
+            const SizedBox(height: 12),
+            Text('预览服务已就绪', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 6),
+            SelectableText(
+              url.isEmpty ? '（等待地址…）' : url,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+              ),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: url.isEmpty ? null : () => Shell.instance.openUrl(url),
+              icon: const Icon(Icons.open_in_browser, size: 18),
+              label: const Text('用系统浏览器打开'),
+            ),
+            const SizedBox(height: 8),
+            TextButton(onPressed: onShowOutput, child: const Text('查看输出')),
+            const SizedBox(height: 12),
+            Text(
+              '桌面端不支持内嵌 WebView，热重载仍在终端里生效',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 /// An embedded workspace view. Its native WebView stays mounted between tabs.
 class WebRunPreview extends StatelessWidget {
@@ -22,6 +75,14 @@ class WebRunPreview extends StatelessWidget {
     return ListenableBuilder(
       listenable: run,
       builder: (context, _) {
+        if (run.serving && isDesktopPlatform) {
+          // 桌面端没有 webview_flutter 实现（官方仅 Android/iOS/macOS），
+          // 预览降级为「显示地址 + 用系统浏览器打开」。
+          return _DesktopPreviewFallback(
+            url: run.url?.toString() ?? '',
+            onShowOutput: onShowOutput,
+          );
+        }
         if (run.serving) {
           return _WebDocument(
             key: ValueKey(run.session!.id),

@@ -1,0 +1,117 @@
+name: Windows Build
+
+# 目标：先让 Windows 版能编译出包。环境层（FlitEnv / POSIX 命令）的移植在后续提交里做。
+on:
+  push:
+    branches:
+      - 'windows/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Versions
+        run: |
+          flutter --version
+          flutter config --list
+
+      # Flit 仓库里只有 android/ 平台目录，Windows runner 在 CI 里生成
+      - name: Generate Windows runner
+        run: flutter create --platforms=windows --project-name flit --org cc.lycstar .
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Unit tests (LocalFs，阻断)
+        run: flutter test test/local_fs_test.dart
+
+      - name: Full test suite (仅记录，不阻断)
+        continue-on-error: true
+        run: flutter test | Tee-Object -FilePath test.log
+
+      - name: Analyze (仅记录，不阻断)
+        continue-on-error: true
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings | Tee-Object -FilePath analyze.log
+
+      - name: Build Windows (release)
+        run: flutter build windows --release
+
+      # Flutter Windows 程序依赖 MSVC 运行库；机器上没装 VC++ Redistributable
+      # 时会直接弹「找不到 msvcp140.dll」。把运行库一起打进包，解压即用。
+      - name: Bundle VC++ runtime DLLs
+        if: success()
+        shell: pwsh
+        run: |
+          $target = "build\windows\x64\runner\Release"
+          if (-not (Test-Path $target)) { throw "产物目录不存在" }
+          $names = @('msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','concrt140.dll')
+          $copied = 0
+          foreach ($n in $names) {
+            $src = "C:\Windows\System32\$n"
+            if (Test-Path $src) {
+              Copy-Item $src -Destination $target -Force
+              Write-Host "bundled $n"
+              $copied++
+            }
+          }
+          if ($copied -eq 0) { Write-Host "warning: 没有找到运行库，跳过" }
+
+      - name: Package artifact
+        if: success()
+        shell: pwsh
+        run: |
+          $src = "build\windows\x64\runner\Release"
+          if (-not (Test-Path $src)) { throw "构建产物不存在: $src" }
+          Get-ChildItem $src | Select-Object Name, Length
+          Compress-Archive -Path "$src\*" -DestinationPath "$env:GITHUB_WORKSPACE\flit-windows-x64.zip" -Force
+          Get-Item "$env:GITHUB_WORKSPACE\flit-windows-x64.zip" | Select-Object Name, Length
+
+      - name: Upload artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flit-windows-x64
+          path: flit-windows-x64.zip
+          retention-days: 14
+
+      # 顺便发成 Release，方便直接点链接下载（不需要登录）
+      - name: Publish preview release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-preview-${{ github.run_number }}
+          name: Windows preview #${{ github.run_number }}
+          body: |
+            自动构建的 Windows 预览包（仅验证可编译/可启动）。
+
+            解压后运行 `flit.exe`。
+
+            已知：环境安装、构建 APK、ADB 等功能尚未移植到 Windows。
+          files: flit-windows-x64.zip
+          prerelease: true
+          draft: false
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            analyze.log
+            test.log
+          if-no-files-found: ignore
+          retention-days: 7
