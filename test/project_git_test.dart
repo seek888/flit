@@ -1,13 +1,16 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flit/core/host_platform.dart';
 import 'package:flit/features/git/github_account.dart';
 import 'package:flit/features/git/project_git.dart';
 import 'package:flit/features/terminal/console_session.dart';
 import 'package:flit/features/terminal/run_sessions.dart';
 import 'package:flit/features/workspace/project_documents.dart';
+import 'package:flit/services/git_credentials.dart';
 import 'package:flit/services/git_repo.dart';
 
 import 'git_repo_test.dart' show localGit;
@@ -34,9 +37,7 @@ void main() {
   test(
     'staged-only commit works; discard and branch switch refresh cached documents',
     () async {
-      final temp = await Directory.systemTemp.createTemp(
-        'flit-git-actions-',
-      );
+      final temp = await Directory.systemTemp.createTemp('flit-git-actions-');
       final repo = GitRepo(temp.path, execute: localGit);
       final documents = ProjectDocuments(
         temp.path,
@@ -151,6 +152,9 @@ void main() {
   test(
     'GitHub auth watches split ANSI codes, does not auto-install, and reflects failed logout',
     () async {
+      // 这组断言的是 Android 的 gh 设备流分支（Windows CI 上默认是桌面分支）。
+      setHostPlatform(HostPlatform.android);
+      addTearDown(() => setHostPlatform(null));
       final processes = <FakeProcess>[];
       final commands = <String>[];
       bool signedIn = false;
@@ -248,4 +252,109 @@ void main() {
       await documents.close();
     },
   );
+
+  test(
+    'desktop GitHub login uses PAT + pure Dart API, persists gitconfig, logout clears it',
+    () async {
+      setHostPlatform(HostPlatform.windows);
+      final home = await Directory.systemTemp.createTemp('flit-gh-desktop-');
+      addTearDown(() async {
+        setHostPlatform(null);
+        if (home.existsSync()) await home.delete(recursive: true);
+      });
+      final credentials = GitCredentials(home: home.path);
+      Uri? requested;
+      String? sentToken;
+      final account = GithubAccount(
+        // 桌面端绝不能启动 gh 控制台会话
+        launcher:
+            ({
+              required command,
+              required workingDirectory,
+              required rows,
+              required columns,
+            }) async => throw StateError('desktop must not launch gh'),
+        credentials: credentials,
+        api: (uri, {token}) async {
+          requested = uri;
+          sentToken = token;
+          return (
+            status: 200,
+            body: jsonEncode({
+              'login': 'octocat',
+              'id': 42,
+              'name': 'Octo Cat',
+              'avatar_url': 'https://avatars.example/u/42',
+            }),
+          );
+        },
+      );
+      try {
+        expect(account.isDesktop, true);
+        expect(account.deviceFlowAvailable, false);
+        await account.refresh();
+        expect(account.auth, GithubAuth.signedOut);
+
+        // 「登录」按钮在桌面端不走 gh，而是提示用 PAT
+        expect(await account.login(), false);
+        expect(account.error, contains('个人访问令牌'));
+
+        expect(await account.loginWithToken('ghp_desktop_token'), true);
+        expect(requested, Uri.parse('https://api.github.com/user'));
+        expect(sentToken, 'ghp_desktop_token');
+        expect(account.auth, GithubAuth.credentialsSaved);
+        expect(account.loginName, 'octocat');
+        expect(await credentials.has(GitCredentials.githubHost), true);
+        final saved = await credentials.load(GitCredentials.githubHost);
+        expect(saved?.username, 'x-access-token');
+        expect(saved?.token, 'ghp_desktop_token');
+        final config = File(credentials.globalConfigPath).readAsStringSync();
+        expect(config, contains('name = Octo Cat'));
+        expect(config, contains('42+octocat@users.noreply.github.com'));
+        expect(config, contains('[credential]'));
+
+        // 刷新：凭据文件存在即已登录，并用令牌拉档案
+        await account.refresh();
+        expect(account.auth, GithubAuth.credentialsSaved);
+        expect(account.loginName, 'octocat');
+
+        expect(await account.logout(), true);
+        expect(account.auth, GithubAuth.signedOut);
+        expect(await credentials.has(GitCredentials.githubHost), false);
+        expect(account.loginName, isNull);
+      } finally {
+        account.dispose();
+      }
+    },
+  );
+
+  test('desktop PAT login surfaces HTTP 401 with a clear message', () async {
+    setHostPlatform(HostPlatform.windows);
+    addTearDown(() => setHostPlatform(null));
+    final home = await Directory.systemTemp.createTemp('flit-gh-401-');
+    addTearDown(() async {
+      if (home.existsSync()) await home.delete(recursive: true);
+    });
+    final account = GithubAccount(
+      launcher:
+          ({
+            required command,
+            required workingDirectory,
+            required rows,
+            required columns,
+          }) async => throw StateError('desktop must not launch gh'),
+      credentials: GitCredentials(home: home.path),
+      api: (uri, {token}) async =>
+          (status: 401, body: '{"message":"Bad credentials"}'),
+    );
+    try {
+      await account.refresh();
+      expect(await account.loginWithToken('bad'), false);
+      expect(account.error, contains('401'));
+      expect(account.auth, GithubAuth.signedOut);
+      expect(await account.logout(), true);
+    } finally {
+      account.dispose();
+    }
+  });
 }

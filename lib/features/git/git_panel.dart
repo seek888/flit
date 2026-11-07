@@ -2,9 +2,11 @@ import 'package:flit/l10n/strings.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/host_platform.dart';
 import '../../core/theme.dart';
 import '../../services/git_repo.dart';
 import '../editor/workbench_layout.dart';
+import 'github_account.dart';
 import 'github_account_tile.dart';
 import 'project_git.dart';
 
@@ -50,6 +52,20 @@ class _GitPanelState extends State<GitPanel> {
 
   void _message(String text) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+
+  /// 桌面端：粘贴个人访问令牌登录 GitHub（写入 app 私有 gitconfig）。
+  Future<void> _loginWithToken() async {
+    final account = context.read<GithubAccount>();
+    final token = await showGithubTokenDialog(context);
+    if (token == null || !mounted) return;
+    final ok = await account.loginWithToken(token);
+    if (!mounted) return;
+    _message(
+      ok
+          ? '已登录 GitHub${account.loginName == null ? '' : '：${account.loginName}'}'
+          : account.error ?? '登录失败',
+    );
+  }
 
   Future<String?> _input(
     String title,
@@ -516,6 +532,22 @@ class _GitPanelState extends State<GitPanel> {
           const Divider(height: 1),
           // 账户是全局的: 与克隆页、设置页同一个 tile
           GithubAccountTile(dense: true, enabled: !disabled),
+          // 桌面端没有 gh CLI：个人访问令牌是主登录方式。
+          if (isDesktopPlatform)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: disabled ? null : _loginWithToken,
+                  icon: const Icon(Icons.vpn_key_outlined, size: 16),
+                  label: const Text(
+                    '个人访问令牌（PAT）登录',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+              ),
+            ),
         ],
       );
     },

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import '../../../services/paths.dart';
 import '../completion/completion_engine.dart';
 import '../lsp/lsp_client.dart';
 import '../lsp/protocol.dart';
@@ -19,7 +20,7 @@ class EditorIntelligence extends ChangeNotifier {
     code.addListener(_onValue);
     language.state.addListener(_onLanguageState);
     _diagnosticsSubscription = language.diagnostics.listen((report) {
-      if (report.path != path ||
+      if (!samePath(report.path, path) ||
           !language.acceptsDiagnostics(report, code.text)) {
         return;
       }

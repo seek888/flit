@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
+import '../git/github_account.dart';
 import '../git/github_account_tile.dart';
+import '../../core/host_platform.dart';
 import '../../core/page_layout.dart';
 import '../../core/theme.dart';
 import '../../services/auto_proxy.dart';
@@ -67,8 +69,10 @@ class _SettingsPageState extends State<SettingsPage>
     if (mounted) setState(() => _environment = status);
   }
 
-  /// 通知与电池优化状态来自方法通道; 测试环境没有 mock, 失败时静默保持占位
+  /// 通知与电池优化状态来自方法通道; 测试环境没有 mock, 失败时静默保持占位。
+  /// 桌面端没有这两个概念, 也不读 permission_handler（Windows 恒 GRANTED 会撒谎）。
   Future<void> _refreshPermissions() async {
+    if (isDesktopPlatform) return;
     try {
       final notification = await Permission.notification.status;
       final battery = await FlitDevice.isIgnoringBatteryOptimizations();
@@ -157,7 +161,11 @@ class _SettingsPageState extends State<SettingsPage>
             context.strings.configureDevelopmentToolsDeviceConnectionsAndThe,
           ),
           SectionLabel(context.strings.account),
-          _card(const [GithubAccountTile()]),
+          _card([
+            const GithubAccountTile(),
+            // 桌面端没有 gh CLI：个人访问令牌是主登录方式（见 GithubAccount）。
+            if (isDesktopPlatform) _githubTokenTile(),
+          ]),
           SectionLabel(context.strings.developmentEnvironment),
           _card([
             _link(
@@ -188,28 +196,34 @@ class _SettingsPageState extends State<SettingsPage>
               onChanged: _proxySaving ? null : _setProxy,
             ),
           ]),
-          SectionLabel(context.strings.backgroundAndNotifications),
-          _card([
-            ListTile(
-              leading: const Icon(Icons.task_alt, color: AppColors.accent),
-              title: Text(context.strings.foregroundService),
-              subtitle: Text(context.strings.showBuildAndTaskStatusInA),
-              trailing: _notificationLabel(),
-              onTap: _requestNotifications,
-            ),
-            ListTile(
-              leading: const Icon(
-                Icons.battery_saver_outlined,
-                color: AppColors.accent,
+          // 桌面端不需要前台服务/电池优化（Windows 上 permission_handler 恒
+          // GRANTED，显示出来等于撒谎），整组隐藏。
+          if (!isDesktopPlatform) ...[
+            SectionLabel(context.strings.backgroundAndNotifications),
+            _card([
+              ListTile(
+                leading: const Icon(Icons.task_alt, color: AppColors.accent),
+                title: Text(context.strings.foregroundService),
+                subtitle: Text(context.strings.showBuildAndTaskStatusInA),
+                trailing: _notificationLabel(),
+                onTap: _requestNotifications,
               ),
-              title: Text(context.strings.backgroundExecution),
-              subtitle: Text(
-                context.strings.ignoreBatteryOptimizationToReduceBackgroundTask,
+              ListTile(
+                leading: const Icon(
+                  Icons.battery_saver_outlined,
+                  color: AppColors.accent,
+                ),
+                title: Text(context.strings.backgroundExecution),
+                subtitle: Text(
+                  context
+                      .strings
+                      .ignoreBatteryOptimizationToReduceBackgroundTask,
+                ),
+                trailing: _batteryLabel(),
+                onTap: _requestBattery,
               ),
-              trailing: _batteryLabel(),
-              onTap: _requestBattery,
-            ),
-          ]),
+            ]),
+          ],
           SectionLabel(context.strings.editorAndTerminal),
           _card([
             _link(
@@ -248,10 +262,7 @@ class _SettingsPageState extends State<SettingsPage>
                           value: 'system',
                           label: Text(context.strings.followSystem),
                         ),
-                        const ButtonSegment(
-                          value: 'zh',
-                          label: Text('简体中文'),
-                        ),
+                        const ButtonSegment(value: 'zh', label: Text('简体中文')),
                         const ButtonSegment(
                           value: 'en',
                           label: Text('English'),
@@ -300,13 +311,43 @@ class _SettingsPageState extends State<SettingsPage>
             ),
             ListTile(
               title: Text(context.strings.platform),
-              subtitle: Text('Android · arm64-v8a'),
+              subtitle: Text(
+                isDesktopPlatform
+                    ? '${hostPlatform.name} · desktop'
+                    : 'Android · arm64-v8a',
+              ),
             ),
           ]),
         ],
       ),
     );
   }
+
+  /// 桌面端：粘贴个人访问令牌登录 GitHub（写入 app 私有 gitconfig）。
+  Future<void> _loginWithToken() async {
+    final account = context.read<GithubAccount>();
+    final token = await showGithubTokenDialog(context);
+    if (token == null || !mounted) return;
+    final ok = await account.loginWithToken(token);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok
+              ? '已登录 GitHub${account.loginName == null ? '' : '：${account.loginName}'}'
+              : account.error ?? '登录失败',
+        ),
+      ),
+    );
+  }
+
+  Widget _githubTokenTile() => ListTile(
+    leading: const Icon(Icons.vpn_key_outlined, color: AppColors.accent),
+    title: const Text('个人访问令牌（PAT）登录'),
+    subtitle: const Text('令牌只保存在本机应用目录，用于私有仓库克隆与推送'),
+    trailing: const Icon(Icons.chevron_right, color: AppColors.textFaint),
+    onTap: _loginWithToken,
+  );
 
   Widget _link(IconData icon, String title, String subtitle, Widget page) =>
       ListTile(

@@ -20,6 +20,13 @@ class PtySession extends ConsoleSession {
   }
 
   Future<void> _ensure() async {
+    // 桌面端没有 Termux 的 $PREFIX/bin/bash：pty_launcher 会用 cmd.exe(/bin/sh)
+    // 直接开一个交互会话，所以门禁只对 Android 有意义。
+    if (isDesktopPlatform) {
+      if (disposed) return;
+      await start(workingDirectory: workingDirectory);
+      return;
+    }
     final status = await Shell.instance.bootstrapStatus();
     final prefix = status['prefix'] as String? ?? '';
     if (!File('$prefix/bin/bash').existsSync() || disposed) return;

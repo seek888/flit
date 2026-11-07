@@ -4,19 +4,28 @@ import 'dart:io';
 
 import 'desktop_toolchain.dart';
 import 'local_fs.dart';
+import 'toolchain/hash.dart' as toolchain_hash;
 
 /// 桌面端的进程/系统能力实现，替代 Android 的 flit_env 原生插件。
 ///
-/// 所有子进程都注入 [DesktopToolchain.childEnvironment]：
-/// 私有 JDK / Flutter / Android SDK 永远优先于系统里装的东西，
-/// 用户机器不需要预先配任何环境变量。
+/// 所有子进程都注入 [DesktopToolchain.childEnvironment]：私有 JDK / Flutter /
+/// Android SDK 永远优先于系统里装的东西，用户机器不需要预先配任何环境变量。
 class DesktopShell {
-  DesktopShell({DesktopToolchain? toolchain})
-    : toolchain = toolchain ?? DesktopToolchain();
+  DesktopShell({
+    DesktopToolchain? toolchain,
+    Map<String, String> Function()? proxyEnvironment,
+  }) : toolchain = toolchain ?? DesktopToolchain(),
+       _proxyEnvironment = proxyEnvironment;
 
   final DesktopToolchain toolchain;
+  final Map<String, String> Function()? _proxyEnvironment;
 
   static final DesktopShell instance = DesktopShell();
+
+  /// AutoProxy 接线点：应用启动后设置一次
+  /// `DesktopShell.proxyEnvironment = proxy.envVars;`，之后所有子进程与
+  /// `environment()` 都会带上代理变量（未设置时直连）。
+  static Map<String, String> Function()? proxyEnvironment;
 
   /// 等价于 Android 侧的 bootstrapStatus()。
   Map<String, dynamic> bootstrapStatus() => <String, dynamic>{
@@ -37,16 +46,16 @@ class DesktopShell {
         ? <String>['cmd.exe', '/c', cmd]
         : <String>['/bin/sh', '-c', cmd];
     try {
-      final r = await Process.run(
+      final result = await Process.run(
         shell.first,
         shell.sublist(1),
-        environment: toolchain.childEnvironment,
+        environment: environment(),
         stdoutEncoding: const SystemEncoding(),
         stderrEncoding: const SystemEncoding(),
         runInShell: false,
       ).timeout(Duration(milliseconds: timeoutMs));
-      final out = '${r.stdout}${r.stderr}';
-      return <String, dynamic>{'exitCode': r.exitCode, 'output': out};
+      final out = '${result.stdout}${result.stderr}';
+      return <String, dynamic>{'exitCode': result.exitCode, 'output': out};
     } on TimeoutException catch (_) {
       return <String, dynamic>{
         'exitCode': 124,
@@ -58,71 +67,59 @@ class DesktopShell {
   }
 
   /// PATH / 私有工具链里是否有这个可执行文件（替代 `command -v`）。
-  bool hasBinary(String name) {
-    if (_searchIn(toolchain.sdkDir, name) != null) return true;
-    if (_searchIn(toolchain.jdkDir, name) != null) return true;
-    if (_searchIn(toolchain.flutterDir, name) != null) return true;
-    if (_searchIn(toolchain.gitDir, name) != null) return true;
-    final path =
-        Platform.environment[Platform.isWindows ? 'Path' : 'PATH'] ?? '';
-    final sep = Platform.isWindows ? ';' : ':';
-    for (final dir in path.split(sep)) {
-      if (dir.trim().isEmpty) continue;
-      if (_existsBinary(dir, name)) return true;
-    }
-    return false;
-  }
+  bool hasBinary(String name) => which(name) != null;
 
   /// 找可执行文件绝对路径（找不到返回 null）。
+  ///
+  /// 只查已知 bin 目录 + PATH，不递归扫整棵 1 GB 的 SDK/Flutter 树；
+  /// Windows 命中 `.bat/.cmd` 时返回真实文件路径，不再盲目拼 `.exe`。
   String? which(String name) {
-    final direct =
-        _searchIn(toolchain.sdkDir, name) ??
-        _searchIn(toolchain.flutterDir, name) ??
-        _searchIn(toolchain.jdkDir, name);
-    if (direct != null) return direct;
+    for (final directory in _searchDirectories) {
+      final hit = _resolveIn(directory, name);
+      if (hit != null) return hit;
+    }
     final path =
         Platform.environment[Platform.isWindows ? 'Path' : 'PATH'] ?? '';
     final sep = Platform.isWindows ? ';' : ':';
-    for (final dir in path.split(sep)) {
-      if (dir.trim().isEmpty) continue;
-      final hit = _existsBinary(dir, name);
-      if (hit) {
-        return _join(dir, name) +
-            (Platform.isWindows && !name.contains('.') ? '.exe' : '');
-      }
+    for (final entry in path.split(sep)) {
+      final directory = entry.trim().replaceAll('"', '');
+      if (directory.isEmpty) continue;
+      final hit = _resolveIn(directory, name);
+      if (hit != null) return hit;
     }
     return null;
   }
 
-  bool _existsBinary(String dir, String name) {
-    if (Platform.isWindows) {
-      for (final ext in <String>['.exe', '.bat', '.cmd', '']) {
-        if (File(_join(dir, '$name$ext')).existsSync()) return true;
-      }
-      return false;
+  List<String> get _searchDirectories {
+    final layout = toolchain.layout;
+    final directories = <String>[
+      layout.jdkBinDir,
+      layout.flutterBinDir,
+      layout.platformToolsDir,
+      layout.join(layout.cmdlineToolsDir, 'bin'),
+      layout.gitCmdDir,
+    ];
+    // build-tools/<version>/ 里有 aapt2 / zipalign 等；逐版本列出即可。
+    final buildTools = Directory(layout.buildToolsDir);
+    if (buildTools.existsSync()) {
+      try {
+        directories.addAll(
+          buildTools.listSync().whereType<Directory>().map((dir) => dir.path),
+        );
+      } catch (_) {}
     }
-    return File(_join(dir, name)).existsSync();
+    return directories;
   }
 
-  String? _searchIn(String root, String name) {
-    final dir = Directory(root);
-    if (!dir.existsSync()) return null;
-    try {
-      for (final e in dir.listSync(recursive: true, followLinks: false)) {
-        if (e is! File) continue;
-        final leaf = e.path.split(Platform.pathSeparator).last;
-        final lower = leaf.toLowerCase();
-        if (Platform.isWindows) {
-          if (lower == '$name.exe' ||
-              lower == '$name.bat' ||
-              lower == '$name.cmd') {
-            return e.path;
-          }
-        } else if (leaf == name) {
-          return e.path;
-        }
-      }
-    } catch (_) {}
+  String? _resolveIn(String directory, String name) {
+    final hasExtension = name.contains('.');
+    final candidates = Platform.isWindows && !hasExtension
+        ? <String>['$name.exe', '$name.bat', '$name.cmd', name]
+        : <String>[name];
+    for (final candidate in candidates) {
+      final path = _join(directory, candidate);
+      if (File(path).existsSync()) return path;
+    }
     return null;
   }
 
@@ -130,35 +127,31 @@ class DesktopShell {
       ? '$a$b'
       : '$a${Platform.pathSeparator}$b';
 
-  /// SHA-256：Windows 用 certutil，类 Unix 用 sha256sum。
+  /// SHA-256：纯 Dart（下载层同款），不依赖 certutil/sha256sum。
   Future<String> sha256OfFile(String path) async {
     try {
-      if (Platform.isWindows) {
-        final r = await Process.run('certutil.exe', <String>[
-          '-hashfile',
-          path,
-          'SHA256',
-        ]);
-        final lines = '${r.stdout}'.split('\n').map((l) => l.trim()).toList();
-        for (final l in lines) {
-          if (RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(l)) return l.toLowerCase();
-        }
-        return '';
-      }
-      final r = await Process.run('sha256sum', <String>[path]);
-      final first = '${r.stdout}'.split('\n').first.trim();
-      return first.split(' ').first;
+      return await toolchain_hash.sha256OfFile(path);
     } catch (_) {
       return '';
     }
   }
 
   /// 用系统默认程序打开 URL。
+  ///
+  /// Windows 用 `rundll32 url.dll,FileProtocolHandler <url>`：URL 作为单个
+  /// 进程参数传入，不经过 cmd 解析，带 `&`/`%` 的链接不会被截断。
   Future<bool> openUrl(String url) async {
     try {
       if (Platform.isWindows) {
-        await Process.run('cmd.exe', <String>['/c', 'start', '', url]);
-      } else if (Platform.isMacOS) {
+        final result = await Process.run('rundll32.exe', <String>[
+          'url.dll,FileProtocolHandler',
+          url,
+        ]);
+        if (result.exitCode == 0) return true;
+        final fallback = await Process.run('explorer.exe', <String>[url]);
+        return fallback.exitCode == 0;
+      }
+      if (Platform.isMacOS) {
         await Process.run('open', <String>[url]);
       } else {
         await Process.run('xdg-open', <String>[url]);
@@ -188,13 +181,28 @@ class DesktopShell {
     }
   }
 
-  /// 读取环境变量（替代 `env -0`）。
-  Map<String, String> environment() =>
-      Map<String, String>.from(toolchain.childEnvironment);
+  /// 子进程可见的环境变量（替代 `env -0`）：私有工具链环境 + 代理变量。
+  Map<String, String> environment({Map<String, String> extra = const {}}) {
+    final merged = <String, String>{...toolchain.childEnvironment};
+    merged.addAll(_proxyVars());
+    merged.addAll(extra);
+    return merged;
+  }
+
+  Map<String, String> _proxyVars() {
+    final provider = _proxyEnvironment ?? proxyEnvironment;
+    if (provider == null) return const <String, String>{};
+    try {
+      return provider();
+    } catch (_) {
+      return const <String, String>{};
+    }
+  }
 
   /// 让 Dart 侧知道当前编码（终端输出用）。
   static String decode(List<int> bytes) =>
       utf8.decode(bytes, allowMalformed: true);
+
   // ---------- POSIX 命令兼容层 ----------
   //
   // Flit 原本假设有 bash：command -v / [ -e ] / cat / env -0 / find -printf。
@@ -212,13 +220,14 @@ class DesktopShell {
           .split(RegExp(r'[\s>]'))
           .first
           .trim();
-      if (!hasBinary(name)) {
+      final path = which(name);
+      if (path == null) {
         return <String, dynamic>{'exitCode': 127, 'output': ''};
       }
-      final path = which(name) ?? name;
       final rest = c.split(';').last.trim();
       if (rest.startsWith(name) && rest.endsWith('--version')) {
-        return await _runSimple(name, const <String>['--version']);
+        // 用 which() 命中的绝对路径（.bat/.cmd 由 cmd /c 启动）。
+        return await _runSimple(path, const <String>['--version']);
       }
       return <String, dynamic>{'exitCode': 0, 'output': path};
     }
@@ -232,8 +241,9 @@ class DesktopShell {
     }
 
     // [ -e 'P' ] || [ -L 'P' ]
-    final existTest = RegExp(r"^\[ -e '(.+?)' \] \|\| \[ -L '(.+?)' \]$")
-        .firstMatch(c);
+    final existTest = RegExp(
+      r"^\[ -e '(.+?)' \] \|\| \[ -L '(.+?)' \]$",
+    ).firstMatch(c);
     if (existTest != null) {
       final p1 = existTest.group(1)!;
       return <String, dynamic>{
@@ -243,8 +253,9 @@ class DesktopShell {
     }
 
     // [ -f 'P' ] && echo RESOLVED
-    final fileTest = RegExp(r"^\[ -f '(.+?)' \] && echo RESOLVED$")
-        .firstMatch(c);
+    final fileTest = RegExp(
+      r"^\[ -f '(.+?)' \] && echo RESOLVED$",
+    ).firstMatch(c);
     if (fileTest != null) {
       final p1 = fileTest.group(1)!;
       final ok = LocalFs.instance.isFile(p1);
@@ -308,16 +319,20 @@ class DesktopShell {
     return out;
   }
 
-  Future<Map<String, dynamic>> _runSimple(String exe, List<String> args) async {
+  /// 直接跑一个短命令；`.bat/.cmd` 由 ToolchainProcessGateway 用 `cmd /c` 启动。
+  Future<Map<String, dynamic>> _runSimple(
+    String executable,
+    List<String> args,
+  ) async {
     try {
-      final r = await Process.run(
-        exe,
+      final result = await toolchain.process.run(
+        executable,
         args,
-        environment: toolchain.childEnvironment,
+        environment: environment(),
       );
       return <String, dynamic>{
-        'exitCode': r.exitCode,
-        'output': '${r.stdout}${r.stderr}',
+        'exitCode': result.exitCode,
+        'output': '${result.stdout}${result.stderr}',
       };
     } catch (e) {
       return <String, dynamic>{'exitCode': -1, 'output': '$e'};

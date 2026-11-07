@@ -7,7 +7,9 @@ import 'package:provider/provider.dart';
 import '../../../core/theme.dart';
 import 'file_dialogs.dart';
 import '../../../services/file_ops.dart';
+import '../../../services/paths.dart';
 import '../../../services/shared_storage_access.dart';
+import '../../../services/shell.dart';
 import '../../workspace/editor_tabs.dart';
 import '../../workspace/project_files.dart';
 import '../../workspace/project_session.dart';
@@ -44,7 +46,7 @@ class _FileTreeDrawerState extends State<FileTreeDrawer> {
   final Set<String> _expanded = {};
   _Loc _loc = _Loc.project;
 
-  // 共享存储导入浏览器
+  // 共享存储/磁盘导入浏览器
   String _browseDir = '';
   List<FileSystemEntity> _entries = [];
   bool _browseLoading = false;
@@ -142,10 +144,31 @@ class _FileTreeDrawerState extends State<FileTreeDrawer> {
 
   // ---------- 位置切换 + 浏览器 ----------
 
+  /// 「共享存储」页签的浏览根。
+  /// Android 是 SAF 共享存储；桌面端没有这个概念，直接浏览用户主目录
+  /// （Windows: %USERPROFILE%，Linux/macOS: $HOME）。
+  String get _storageRoot {
+    if (isDesktopPlatform) {
+      final env = Platform.environment;
+      return env['USERPROFILE'] ?? env['HOME'] ?? Directory.current.path;
+    }
+    return '/storage/emulated/0';
+  }
+
   Future<void> _switchLoc(_Loc loc) async {
     if (loc == _Loc.project) {
       ++_browseRequest;
       setState(() => _loc = loc);
+      return;
+    }
+    if (isDesktopPlatform) {
+      // permission_handler 在 Windows 上恒 GRANTED，权限门禁没有意义；
+      // 也不该把 /storage/emulated/0 这种 Android 路径丢给 Directory.list。
+      setState(() {
+        _loc = loc;
+        _browseDir = _storageRoot;
+      });
+      await _reloadEntries();
       return;
     }
     final granted = await SharedStorageAccess.request(
@@ -155,7 +178,7 @@ class _FileTreeDrawerState extends State<FileTreeDrawer> {
     if (!mounted || !granted) return;
     setState(() {
       _loc = loc;
-      _browseDir = '/storage/emulated/0';
+      _browseDir = _storageRoot;
     });
     await _reloadEntries();
   }
@@ -171,11 +194,9 @@ class _FileTreeDrawerState extends State<FileTreeDrawer> {
         final aDir = a is Directory;
         final bDir = b is Directory;
         if (aDir != bDir) return aDir ? -1 : 1;
-        return a.path
-            .split('/')
-            .last
-            .toLowerCase()
-            .compareTo(b.path.split('/').last.toLowerCase());
+        return baseName(
+          a.path,
+        ).toLowerCase().compareTo(baseName(b.path).toLowerCase());
       });
       if (!mounted || request != _browseRequest) return;
       setState(() {
@@ -197,9 +218,9 @@ class _FileTreeDrawerState extends State<FileTreeDrawer> {
   }
 
   void _ascend() {
-    if (_browseDir == '/storage/emulated/0') return;
-    final parent = _browseDir.substring(0, _browseDir.lastIndexOf('/'));
-    if (parent.isEmpty || !_browseDir.contains('/')) return;
+    if (_browseDir == _storageRoot) return;
+    final parent = dirName(_browseDir);
+    if (parent.isEmpty || parent == _browseDir) return;
     setState(() => _browseDir = parent);
     _reloadEntries();
   }
@@ -243,7 +264,7 @@ class _FileTreeDrawerState extends State<FileTreeDrawer> {
   }
 
   /// 项目树节点 → 绝对路径
-  String _abs(_Node n) => '${_project.path}/${n.path}';
+  String _abs(_Node n) => joinPath(_project.path, n.path);
 
   void _nodeMenu(_Node n) {
     final abs = _abs(n);
@@ -311,7 +332,7 @@ class _FileTreeDrawerState extends State<FileTreeDrawer> {
   }
 
   void _browseMenu(FileSystemEntity e) {
-    final name = e.path.split('/').last;
+    final name = baseName(e.path);
     showActionMenu(context, [
       (
         'copy',
@@ -371,9 +392,10 @@ class _FileTreeDrawerState extends State<FileTreeDrawer> {
       _Loc.project => context.strings.project,
       _Loc.storage => context.strings.sharedStorageImportOnly,
     };
+    final browseName = baseName(_browseDir);
     final title = _loc == _Loc.project
         ? _project.name
-        : _browseDir.split('/').where((s) => s.isNotEmpty).last;
+        : (browseName.isEmpty ? _browseDir : browseName);
     return ListTile(
       dense: true,
       leading: Icon(
@@ -419,21 +441,22 @@ class _FileTreeDrawerState extends State<FileTreeDrawer> {
                   }
                 : _reloadEntries,
           ),
-          PopupMenuButton<_Loc>(
-            tooltip: context.strings.switchLocation,
-            icon: const Icon(Icons.drive_file_move_outline, size: 18),
-            onSelected: _switchLoc,
-            itemBuilder: (_) => [
-              PopupMenuItem(
-                value: _Loc.project,
-                child: Text(context.strings.project),
-              ),
-              PopupMenuItem(
-                value: _Loc.storage,
-                child: Text(context.strings.copyFromSharedStorage),
-              ),
-            ],
-          ),
+          if (!isDesktopPlatform)
+            PopupMenuButton<_Loc>(
+              tooltip: context.strings.switchLocation,
+              icon: const Icon(Icons.drive_file_move_outline, size: 18),
+              onSelected: _switchLoc,
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: _Loc.project,
+                  child: Text(context.strings.project),
+                ),
+                PopupMenuItem(
+                  value: _Loc.storage,
+                  child: Text(context.strings.copyFromSharedStorage),
+                ),
+              ],
+            ),
         ],
       ),
     );
@@ -494,7 +517,7 @@ class _FileTreeDrawerState extends State<FileTreeDrawer> {
     return Column(
       children: [
         InkWell(
-          onTap: _browseDir == '/storage/emulated/0' ? null : _ascend,
+          onTap: _browseDir == _storageRoot ? null : _ascend,
           child: Container(
             padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
             width: double.infinity,
@@ -536,7 +559,7 @@ class _FileTreeDrawerState extends State<FileTreeDrawer> {
                   itemBuilder: (_, i) {
                     final e = _entries[i];
                     final isDir = e is Directory;
-                    final name = e.path.split('/').last;
+                    final name = baseName(e.path);
                     if (name.startsWith('.')) return const SizedBox.shrink();
                     return ListTile(
                       dense: true,

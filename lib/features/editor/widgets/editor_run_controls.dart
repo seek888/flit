@@ -6,6 +6,8 @@ import 'package:provider/provider.dart';
 import '../../../core/theme.dart';
 import '../../../core/workbench_controls.dart';
 import '../../../services/adb_ops.dart';
+import '../../../services/paths.dart';
+import '../../../services/shell.dart';
 import '../../device/device_connect_page.dart';
 import '../../environment/android_build_wrapper.dart';
 import '../../git/project_git.dart';
@@ -265,169 +267,218 @@ class _EditorRunControlsState extends State<EditorRunControls> {
 
   /// 任务面板(AS Tools 菜单的对应): 依赖/构建/代码/维护分区, 每条都是
   /// 只读的临时会话(输出隔离 + chip 即进度灯), 按工程类型出内容。
+  ///
+  /// 桌面端不再用手机式底部抽屉：改成 480 宽的居中对话框（面板内容同一份），
+  /// 构建按钮保留，构建成功后补“产物在哪”的提示。
   Future<void> _tasksSheet() async {
     final flutter = !_isDart;
+    if (isDesktopPlatform) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => Dialog(
+          backgroundColor: AppColors.surface,
+          insetPadding: const EdgeInsets.all(32),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 480, maxHeight: 640),
+            child: SafeArea(
+              child: SingleChildScrollView(child: _tasksContent(ctx, flutter)),
+            ),
+          ),
+        ),
+      );
+      return;
+    }
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: AppColors.surface,
-      builder: (ctx) => ListenableBuilder(
-        listenable: Listenable.merge([
-          _executions,
-          _project.actions.starting,
-          _project.git,
-        ]),
-        builder: (_, _) {
-          final runningTitles = _executions.all
-              .where((s) => s.alive)
-              .map((s) => s.title)
-              .join('、');
-          return SafeArea(
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const SheetHandle(),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                    child: Row(
-                      children: [
-                        Text(
-                          context.strings.tasks,
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const Spacer(),
-                        Text(
-                          context.strings.currentProjectP(_project.name),
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: AppColors.textFaint,
-                          ),
-                        ),
-                      ],
-                    ),
+      builder: (ctx) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [const SheetHandle(), _tasksContent(ctx, flutter)],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _tasksContent(BuildContext ctx, bool flutter) => ListenableBuilder(
+    listenable: Listenable.merge([
+      _executions,
+      _project.actions.starting,
+      _project.git,
+    ]),
+    builder: (_, _) {
+      final runningTitles = _executions.all
+          .where((s) => s.alive)
+          .map((s) => s.title)
+          .join('、');
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+            child: Row(
+              children: [
+                Text(
+                  context.strings.tasks,
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+                const Spacer(),
+                Text(
+                  context.strings.currentProjectP(_project.name),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textFaint,
                   ),
-                  const Divider(height: 1),
-                  if (_executions.active != null ||
-                      _project.actions.starting.value != null ||
-                      _project.git.busy)
-                    ListTile(
-                      dense: true,
-                      title: Text(
-                        context.strings.currentTaskP(
-                          runningTitles.isNotEmpty
-                              ? runningTitles
-                              : (_project.git.busy
-                                    ? 'Git'
-                                    : context.strings.startingEllipsis),
-                        ),
-                      ),
-                      subtitle: Text(
-                        context
-                            .strings
-                            .tasksUseSeparateTerminalsConflictingActionsAre,
-                      ),
-                    ),
-                  _section(context.strings.dependencies, [
-                    _toolItem(
-                      ctx,
-                      ProjectTool.pubGet,
-                      context.strings.fetchDependenciesAndWritePackageConfig,
-                    ),
-                    _toolItem(
-                      ctx,
-                      ProjectTool.pubUpgrade,
-                      context.strings.upgradeDependenciesWithinConstraints,
-                    ),
-                    _toolItem(
-                      ctx,
-                      ProjectTool.pubOutdated,
-                      context.strings.listOutdatedDependencies,
-                    ),
-                  ]),
-                  _section(
-                    context.strings.build,
-                    flutter
-                        ? [
-                            _buildItem(
-                              ctx,
-                              ProjectBuild.debugApk.configuration,
-                              Icons.android_outlined,
-                              context.strings.buildApkDebug,
-                              context
-                                  .strings
-                                  .buildThenInstallOnTheSelectedAndroid,
-                              () => _project.actions.build(
-                                ProjectBuild.debugApk,
-                                confirmRepair: _confirmRepair,
-                              ),
-                            ),
-                            _buildItem(
-                              ctx,
-                              ProjectBuild.releaseApk.configuration,
-                              Icons.android_outlined,
-                              context.strings.buildApkRelease,
-                              context.strings.buildAReleaseApkThenChooseAdb,
-                              () => _project.actions.build(
-                                ProjectBuild.releaseApk,
-                                confirmRepair: _confirmRepair,
-                              ),
-                            ),
-                            _buildItem(
-                              ctx,
-                              ProjectBuild.web.configuration,
-                              Icons.web,
-                              context.strings.buildWebRelease,
-                              context.strings.outputDirectoryBuildWeb,
-                              () => _project.actions.build(ProjectBuild.web),
-                            ),
-                          ]
-                        : [
-                            _buildItem(
-                              ctx,
-                              _project.actions.dartExeConfiguration,
-                              Icons.memory_outlined,
-                              context.strings.compileExecutable,
-                              context
-                                  .strings
-                                  .dartCompileExeOutputBuildPackageName,
-                              () => _project.actions.buildDartExe(),
-                            ),
-                          ],
-                  ),
-                  _section(context.strings.code, [
-                    _toolItem(
-                      ctx,
-                      ProjectTool.analyze,
-                      context.strings.runBatchAnalysisAndShowResultsIn,
-                    ),
-                    _toolItem(
-                      ctx,
-                      ProjectTool.test,
-                      context.strings.runTestsInTheTestDirectory,
-                    ),
-                  ]),
-                  if (flutter)
-                    _section(context.strings.maintenance, [
-                      _toolItem(
-                        ctx,
-                        ProjectTool.clean,
-                        context.strings.deleteBuildAndDartToolCaches,
-                      ),
-                      _toolItem(
-                        ctx,
-                        ProjectTool.doctor,
-                        context.strings.checkFlutterAndAndroidToolchainHealth,
-                      ),
-                    ]),
-                ],
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          if (_executions.active != null ||
+              _project.actions.starting.value != null ||
+              _project.git.busy)
+            ListTile(
+              dense: true,
+              title: Text(
+                context.strings.currentTaskP(
+                  runningTitles.isNotEmpty
+                      ? runningTitles
+                      : (_project.git.busy
+                            ? 'Git'
+                            : context.strings.startingEllipsis),
+                ),
+              ),
+              subtitle: Text(
+                context.strings.tasksUseSeparateTerminalsConflictingActionsAre,
               ),
             ),
-          );
-        },
+          _section(context.strings.dependencies, [
+            _toolItem(
+              ctx,
+              ProjectTool.pubGet,
+              context.strings.fetchDependenciesAndWritePackageConfig,
+            ),
+            _toolItem(
+              ctx,
+              ProjectTool.pubUpgrade,
+              context.strings.upgradeDependenciesWithinConstraints,
+            ),
+            _toolItem(
+              ctx,
+              ProjectTool.pubOutdated,
+              context.strings.listOutdatedDependencies,
+            ),
+          ]),
+          _section(
+            context.strings.build,
+            flutter
+                ? [
+                    _buildItem(
+                      ctx,
+                      ProjectBuild.debugApk.configuration,
+                      Icons.android_outlined,
+                      context.strings.buildApkDebug,
+                      context.strings.buildThenInstallOnTheSelectedAndroid,
+                      () => _build(ctx, ProjectBuild.debugApk),
+                    ),
+                    _buildItem(
+                      ctx,
+                      ProjectBuild.releaseApk.configuration,
+                      Icons.android_outlined,
+                      context.strings.buildApkRelease,
+                      context.strings.buildAReleaseApkThenChooseAdb,
+                      () => _build(ctx, ProjectBuild.releaseApk),
+                    ),
+                    _buildItem(
+                      ctx,
+                      ProjectBuild.web.configuration,
+                      Icons.web,
+                      context.strings.buildWebRelease,
+                      context.strings.outputDirectoryBuildWeb,
+                      () => _build(ctx, ProjectBuild.web),
+                    ),
+                  ]
+                : [
+                    _buildItem(
+                      ctx,
+                      _project.actions.dartExeConfiguration,
+                      Icons.memory_outlined,
+                      context.strings.compileExecutable,
+                      context.strings.dartCompileExeOutputBuildPackageName,
+                      () => _project.actions.buildDartExe(),
+                    ),
+                  ],
+          ),
+          _section(context.strings.code, [
+            _toolItem(
+              ctx,
+              ProjectTool.analyze,
+              context.strings.runBatchAnalysisAndShowResultsIn,
+            ),
+            _toolItem(
+              ctx,
+              ProjectTool.test,
+              context.strings.runTestsInTheTestDirectory,
+            ),
+          ]),
+          if (flutter)
+            _section(context.strings.maintenance, [
+              _toolItem(
+                ctx,
+                ProjectTool.clean,
+                context.strings.deleteBuildAndDartToolCaches,
+              ),
+              _toolItem(
+                ctx,
+                ProjectTool.doctor,
+                context.strings.checkFlutterAndAndroidToolchainHealth,
+              ),
+            ]),
+        ],
+      );
+    },
+  );
+
+  /// 构建入口：先把面板关掉并切到输出，再按平台补“产物在哪”的提示。
+  ///
+  /// 桌面端构建成功后会等会话真正结束，再弹“打开产物文件夹”；
+  /// Android 端维持原样（产物卡由 editor 的 builtArtifacts 打开）。
+  Future<RunSession> _build(BuildContext ctx, ProjectBuild kind) async {
+    Navigator.pop(ctx);
+    _layout.showOutput();
+    final session = await _project.actions.build(
+      kind,
+      confirmRepair: _confirmRepair,
+    );
+    final artifact = session.configuration.artifactPath;
+    if (isDesktopPlatform && artifact != null) {
+      unawaited(
+        session.done.then((code) {
+          if (!mounted || code != 0 || session.stopRequested) return;
+          _showArtifactHint(artifact);
+        }),
+      );
+    }
+    return session;
+  }
+
+  void _showArtifactHint(String artifact) {
+    final absolute = joinPath(_project.path, artifact);
+    final directory =
+        FileSystemEntity.typeSync(absolute) == FileSystemEntityType.directory
+        ? absolute
+        : dirName(absolute);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('构建完成：$artifact'),
+        duration: const Duration(seconds: 6),
+        action: SnackBarAction(
+          label: '打开产物文件夹',
+          onPressed: () => Shell.instance.revealDirectory(directory),
+        ),
       ),
     );
   }

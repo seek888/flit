@@ -44,20 +44,22 @@ void main() {
         });
       }
       final commands = <String>[];
+      final invocations = <List<String>>[];
       String status = '## main\x00MM main.dart\x00';
       final repo = GitRepo(
         '/project',
-        execute: (command) async {
-          commands.add(command);
-          if (command.contains("'--show-prefix'")) return (code: 0, out: '');
-          if (command.contains("'rev-parse'")) {
+        execute: (args) async {
+          invocations.add(List<String>.of(args));
+          commands.add(args.join(' '));
+          if (args.contains('--show-prefix')) return (code: 0, out: '');
+          if (args.contains('rev-parse')) {
             return (code: 0, out: '/project\n');
           }
-          if (command.contains("'status'")) return (code: 0, out: status);
-          if (command.contains("'diff'")) {
+          if (args.contains('status')) return (code: 0, out: status);
+          if (args.contains('diff')) {
             return (
               code: 0,
-              out: command.contains("'--cached'")
+              out: args.contains('--cached')
                   ? '+staged version'
                   : '+working version',
             );
@@ -136,7 +138,8 @@ void main() {
       expect(find.text('回滚更改？'), findsOneWidget);
       await tester.tap(find.text('取消'));
       await tester.pumpAndSettle();
-      expect(commands.any((c) => c.contains("'restore'")), false);
+      // 取消回滚后不能真的执行 git restore（argv 里不应出现 restore）
+      expect(invocations.any((args) => args.contains('restore')), false);
       await tester.tap(find.text('提交更改 · 1'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'message');

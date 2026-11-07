@@ -5,14 +5,19 @@ import 'package:flit/features/projects/projects_page.dart';
 import 'package:flit/features/projects/create_project_page.dart';
 import 'package:flit/features/projects/clone_project_page.dart';
 import 'package:flit/core/app_scope.dart';
+import 'package:flit/core/host_platform.dart';
 import 'package:flit/services/shared_storage_access.dart';
 
 import 'support/app_scope.dart';
 import 'support/fake_session_process.dart';
 import 'support/flit_plugins.dart';
+import 'support/host_platform.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  // 首页/工程存储用例 mock 了 flit/env 通道；Windows CI 上必须固定成 android，
+  // 否则 Shell 会走 DesktopShell 绕过通道桩（路径/文案断言全变）。
+  useHostPlatform(HostPlatform.android);
   final messenger =
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
   final requests = <Object?>[];

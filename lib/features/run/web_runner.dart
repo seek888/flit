@@ -5,20 +5,100 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../../core/host_platform.dart';
+import '../../services/desktop_toolchain.dart';
+import '../../services/paths.dart';
+import '../../services/shell.dart';
 import '../terminal/run_sessions.dart';
 import '../terminal/flutter_log_formatter.dart';
 
 enum WebRunState { idle, starting, serving, stopped, failed }
 
+/// 工程是否已具备 Web 平台入口（`web/index.html` 是 `flutter build web` 的硬前提）。
+bool hasWebPlatform(String projectPath) =>
+    File(joinPath(projectPath, 'web/index.html')).existsSync();
+
+/// 补建 Web 平台目录：`flutter create --platforms=web .`。
+///
+/// 桌面端用参数数组 + [Process.run]（不再拼 `if [ ! -d web ]` / `stty` 这类
+/// POSIX 语法，Windows 的 cmd.exe 解析不了）；Android 端保持原来的命令串。
+/// 返回是否真的执行了创建；工程已有 `web/` 时什么都不做。
+///
+/// 桌面 Flutter 尚未装好时直接返回 false：让真正的 build/run 命令报出更准确的
+/// “Flutter 未安装”诊断，而不是被引导步骤的失败盖掉。
+Future<bool> ensureWebPlatform(String projectPath) async {
+  if (hasWebPlatform(projectPath)) return false;
+  if (isDesktopPlatform) {
+    final toolchain = DesktopToolchain();
+    if (!File(toolchain.flutterExe).existsSync()) return false;
+    final result = await Process.run(
+      toolchain.flutterExe,
+      const ['create', '--platforms=web', '.'],
+      workingDirectory: projectPath,
+      environment: toolchain.childEnvironment,
+      runInShell: isWindowsPlatform,
+      stdoutEncoding: const SystemEncoding(),
+      stderrEncoding: const SystemEncoding(),
+    );
+    if (result.exitCode != 0) {
+      throw StateError(
+        '无法为工程补建 Web 平台目录（flutter create --platforms=web .）：'
+        '${('${result.stdout}${result.stderr}').trim()}',
+      );
+    }
+    return true;
+  }
+  final result = await Shell.instance.exec(
+    'cd ${shQuote(projectPath)} && flutter create --platforms=web . 2>&1',
+    timeoutMs: 180000,
+  );
+  if (result['exitCode'] != 0) {
+    throw StateError(
+      '无法为工程补建 Web 平台目录（flutter create --platforms=web .）：'
+      '${result['output'] ?? ''}',
+    );
+  }
+  return true;
+}
+
+/// Web 预览的 flutter machine 命令。
+///
+/// 桌面端：不带 POSIX 引导与 `stty`，主机固定回环（cmd.exe 可解析、无 stty）；
+/// Android 端：保留原有的「缺 web/ 就补建 + stty -echo + 0.0.0.0」命令串。
+String webRunCommand(int port, {required bool desktop}) {
+  if (desktop) {
+    return 'flutter run --machine -d web-server --web-hostname 127.0.0.1 '
+        '--web-port $port --no-devtools 2>&1';
+  }
+  return 'if [ ! -d web ]; then flutter create --platforms web . || exit \$?; fi; '
+      'stty -echo; '
+      // 0.0.0.0 让同一局域网的设备能用手机 IP 访问预览;
+      // 应用内 WebView 仍走回环地址(见 app.webLaunchUrl 归一化)。
+      'flutter run --machine -d web-server --web-hostname 0.0.0.0 '
+      '--web-port $port --no-devtools 2>&1';
+}
+
 /// The project owns the server and Flutter protocol; changing views owns neither.
 class WebRunController extends ChangeNotifier {
-  WebRunController(this.executions, {Future<int> Function()? allocatePort})
-    : _allocatePort = allocatePort ?? _freePort {
+  WebRunController(
+    this.executions, {
+    Future<int> Function()? allocatePort,
+    Future<void> Function(String projectPath)? prepareWeb,
+  }) : _allocatePort = allocatePort ?? _freePort,
+       _prepareWeb = prepareWeb ?? _defaultPrepareWeb {
     executions.addListener(_executionChanged);
   }
 
   final RunSessions executions;
   final Future<int> Function() _allocatePort;
+
+  /// 桌面端点“Web 预览”前补建 `web/` 平台目录（测试注入 no-op，不 spawn flutter）。
+  final Future<void> Function(String projectPath) _prepareWeb;
+
+  static Future<void> _defaultPrepareWeb(String projectPath) async {
+    await ensureWebPlatform(projectPath);
+  }
+
   RunSession? session;
   WebRunState state = WebRunState.idle;
   Uri? url;
@@ -76,6 +156,12 @@ class WebRunController extends ChangeNotifier {
       final port = await _allocatePort();
       if (_disposed || epoch != _epoch) return;
       _port = port;
+      if (isDesktopPlatform) {
+        // 桌面端补建 web/ 用 Dart 判断 + flutter create（参数数组），
+        // 不再把 POSIX 引导塞进命令串；启动中/计时器失效时放弃本次启动。
+        await _prepareWeb(executions.projectPath);
+        if (_disposed || epoch != _epoch || !starting) return;
+      }
       final launched = await executions.start(
         RunConfiguration(
           id: 'run:web',
@@ -83,13 +169,7 @@ class WebRunController extends ChangeNotifier {
           kind: SessionKind.run,
           hotReload: true,
           target: 'web',
-          command:
-              'if [ ! -d web ]; then flutter create --platforms web . || exit \$?; fi; '
-              'stty -echo; '
-              // 0.0.0.0 让同一局域网的设备能用手机 IP 访问预览;
-              // 应用内 WebView 仍走回环地址(见 app.webLaunchUrl 归一化)。
-              'flutter run --machine -d web-server --web-hostname 0.0.0.0 '
-              '--web-port $port --no-devtools 2>&1',
+          command: webRunCommand(port, desktop: isDesktopPlatform),
         ),
         outputFormatter: (chunk) =>
             epoch == _epoch && !_disposed ? _readOutput(chunk) : chunk,
@@ -156,9 +236,11 @@ class WebRunController extends ChangeNotifier {
             final candidate = Uri.tryParse(params['url'] as String? ?? '');
             if (candidate != null &&
                 candidate.port == _port &&
-                const {'0.0.0.0', '127.0.0.1', 'localhost'}.contains(
-                  candidate.host,
-                )) {
+                const {
+                  '0.0.0.0',
+                  '127.0.0.1',
+                  'localhost',
+                }.contains(candidate.host)) {
               url = candidate.replace(host: '127.0.0.1');
             }
           case 'app.started':

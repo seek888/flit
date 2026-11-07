@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../services/background_access.dart';
+import '../../services/shell.dart';
 import '../editor/editor_page.dart';
 import '../environment/environment_page.dart';
 import '../environment/environment_controller.dart';
@@ -47,7 +48,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   }
 
   Future<void> _initialize() async {
-    await BackgroundAccess.explain(context);
+    // 后台保活/通知/电池优化是 Android 概念；桌面端没有这些权限，
+    // 也不该在首次启动时弹一段手机端的说明。
+    if (!isDesktopPlatform) await BackgroundAccess.explain(context);
     if (mounted) await _openEnvironment();
   }
 

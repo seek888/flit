@@ -3,6 +3,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../../services/paths.dart';
 import '../../services/shell.dart';
 import '../../services/adb_ops.dart';
 import '../editor/lsp/lsp_client.dart';
@@ -31,7 +32,7 @@ class ProjectSession extends ChangeNotifier {
        documents = ProjectDocuments(path),
        executions = RunSessions(projectPath: path, launcher: launcher);
   final String path;
-  String get name => path.split('/').last;
+  String get name => baseName(path);
   final language = LspClient();
   final ProjectDocuments documents;
   late final files = ProjectFiles(documents);

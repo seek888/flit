@@ -9,11 +9,14 @@ import 'android_build_wrapper.dart';
 import 'bootstrap_installer.dart';
 import 'setup_runner.dart';
 import '../../services/desktop_toolchain.dart';
+import '../../services/net_probe.dart';
 import '../../services/local_fs.dart';
 import '../../services/shell.dart';
 import '../terminal/console_session.dart';
 import 'toolchain_catalog.dart';
+import 'desktop_setup_runner.dart';
 import 'installed_toolchain.dart';
+import 'setup_event.dart';
 
 /// 安装步骤定义(展示顺序, 3 个可见阶段); OpenJDK 归入 Android 阶段作子项。
 /// 各阶段实体仍是 assets/scripts/ 下的 .sh, 与组件 id 的映射见 stageScripts。
@@ -81,8 +84,9 @@ Map<String, String> get partNames => <String, String>{
   'flutter_warmup': strings.warmUp,
 };
 
-/// 过程性步骤不上卡片(下载解压/预热是内部动作, 不是"装了什么组件")
-const hiddenParts = {'bootstrap', 'flutter_warmup'};
+/// 过程性步骤不上卡片(下载解压是内部动作, 不是"装了什么组件")。
+/// flutter_warmup 改为真实阶段后必须可见(失败要能看到原因), 不再隐藏。
+const hiddenParts = {'bootstrap'};
 
 /// 各组件体积；du 不跟随 SDK 中的 NDK/CMake 链接，避免重复计数。
 const _sizeProbeCmd = r'''
@@ -145,6 +149,9 @@ class StageState {
   String state = 'PENDING'; // DONE / PENDING / RUNNING / FAILED / BLOCKED
   String? version;
   String? size;
+
+  /// 可选说明（如「按需安装」「使用系统 Git」），不参与就绪判定。
+  String? note;
 }
 
 /// App-owned installation task; navigation never changes its process lifetime.
@@ -203,6 +210,11 @@ class EnvironmentController extends ChangeNotifier {
   String? home;
   String? prefix;
   SetupRunner? _runner;
+  DesktopSetupRunner? _desktopRunner;
+
+  /// 当前平台是否已拿到安装编排器（桌面是 DesktopSetupRunner，Android 是 SetupRunner）。
+  bool get _hasRunner =>
+      isDesktopPlatform ? _desktopRunner != null : _runner != null;
 
   final StringBuffer _lineBuf = StringBuffer();
 
@@ -214,11 +226,10 @@ class EnvironmentController extends ChangeNotifier {
   /// 单棵树; flutter 按版本并存，通过 current 切换。
   Future<void> installFromCatalog(CatalogEntry entry) async {
     if (isDesktopPlatform) {
-      _term('桌面版按整链安装（JDK/SDK/Flutter/Git），不支持单独装某个版本', color: _cWarn);
-      await startPipeline();
+      await _installCatalogDesktop(entry);
       return;
     }
-    if (busy || _runner == null) {
+    if (busy || !_hasRunner) {
       _term(strings.aTaskIsRunningWaitBeforeInstalling, color: _cWarn);
       return;
     }
@@ -268,10 +279,10 @@ class EnvironmentController extends ChangeNotifier {
     bool delete = false,
   }) async {
     if (isDesktopPlatform) {
-      _term('桌面版暂不支持多版本切换/删除，重装请删掉工具链目录后重新安装', color: _cWarn);
+      await _changeInstalledDesktop(tool, delete: delete);
       return;
     }
-    if (busy || _runner == null || !_canMutate()) return;
+    if (busy || !_hasRunner || !_canMutate()) return;
     installing = true;
     AndroidBuildWrapper.installing = true;
     notifyListeners();
@@ -299,7 +310,11 @@ class EnvironmentController extends ChangeNotifier {
   }
 
   Future<void> probeNetwork() async {
-    if (busy || _runner == null) return;
+    if (isDesktopPlatform) {
+      await _probeNetworkDesktop();
+      return;
+    }
+    if (busy || !_hasRunner) return;
     if (stages['bootstrap']!.state != 'DONE') {
       _term(strings.installTheBaseEnvironmentBeforeCheckingThe, color: _cWarn);
       return;
@@ -338,9 +353,17 @@ class EnvironmentController extends ChangeNotifier {
       home = st['home'] as String?;
       prefix = st['prefix'] as String?;
       if (home != null && prefix != null) {
-        final runner = SetupRunner(home: home!, prefix: prefix!);
-        await runner.installScripts();
-        _runner = runner;
+        if (isDesktopPlatform) {
+          final runner = DesktopSetupRunner(
+            toolchain: DesktopToolchain(home: home),
+          );
+          await runner.prepare();
+          _desktopRunner = runner;
+        } else {
+          final runner = SetupRunner(home: home!, prefix: prefix!);
+          await runner.installScripts();
+          _runner = runner;
+        }
       }
     } catch (e) {
       _term(strings.environmentCheckFailedP(e), color: _cErr);
@@ -460,7 +483,13 @@ class EnvironmentController extends ChangeNotifier {
       stages[id]!.state = 'PENDING';
       stages[id]!.version = null;
     }
-    if (isDesktopPlatform && bootstrapped) {
+    if (isDesktopPlatform) {
+      _desktopRunner ??= DesktopSetupRunner(
+        toolchain: DesktopToolchain(home: home),
+      );
+      try {
+        await _desktopRunner!.prepare();
+      } catch (_) {}
       await _desktopCheck();
       await _loadSizes();
       await _loadInstalled();
@@ -495,10 +524,20 @@ class EnvironmentController extends ChangeNotifier {
 
   Future<void> _loadInstalled() async {
     if (isDesktopPlatform) {
-      // 桌面端暂不管理多版本：单份工具链，版本页留空但不报错。
-      installed = const [];
-      installedLoaded = true;
-      installedError = null;
+      final runner = _desktopRunner;
+      if (runner == null) {
+        installed = const [];
+        installedLoaded = false;
+        installedError = strings.componentsAreNotReadyCheckAgain;
+        return;
+      }
+      try {
+        installed = await runner.listInstalled();
+        installedLoaded = true;
+        installedError = null;
+      } catch (error) {
+        installedError = '无法读取已安装组件：$error';
+      }
       return;
     }
     try {
@@ -536,109 +575,170 @@ class EnvironmentController extends ChangeNotifier {
     return code;
   }
 
-  /// 桌面端无需 build 的具体组件：Gradle 由 Wrapper 下载、NDK/CMake 按需、
-  /// git/gh 走系统 git。直接判为 DONE，避免卡住「环境就绪」。
-  static const _desktopNotRequired = <String>[
-    'android_ndk',
-    'android_cmake',
-    'android_gradle',
-    'flutter_warmup',
-  ];
-
-  /// 桌面端环境检测：把私有工具链的真实状态翻译成 __STAGE__ 标记。
+  /// 桌面端环境检测：8 个子任务的判定收敛到 DesktopSetupRunner.check()
+  /// （唯一映射源；输出 `__STAGE__` + 从文件读的 `__VER__`，与 Android 协议一致）。
   Future<void> _desktopCheck() async {
-    final st = await DesktopToolchain().status();
-    final marks = <String>[
-      '__STAGE__android_jdk:${st.jdk ? 'DONE' : 'MISSING'}',
-      '__STAGE__android_sdk:${st.androidSdk && st.aapt2 && st.platform ? 'DONE' : 'MISSING'}',
-      '__STAGE__flutter_sdk:${st.flutter ? 'DONE' : 'MISSING'}',
-      '__STAGE__flutter_tools:${st.git ? 'DONE' : 'MISSING'}',
-      for (final id in _desktopNotRequired) '__STAGE__$id:DONE',
-    ];
-    _onPtyText('${marks.join('\n')}\n');
-    _checkFailed = !(st.jdk && st.androidSdk && st.flutter);
+    final runner = _desktopRunner;
+    if (runner == null) {
+      _checkFailed = true;
+      return;
+    }
+    final markers = runner.check();
+    _onPtyText('${stageMarkerTextOf(markers)}\n');
+    _checkFailed = markers.any((marker) => !marker.ok);
+    for (final marker in markers) {
+      final stage = stages[marker.id];
+      if (stage != null && marker.note != null) stage.note = marker.note;
+    }
   }
 
-  /// 桌面端按阶段安装：直接调 DesktopToolchain，输出进同一个控制台。
+  /// 桌面端按阶段安装：委托 DesktopSetupRunner 的类型化事件，再映射回现有
+  /// 控制台与阶段状态；Android 的 `__STAGE__/__VER__` 解析路径保持不变。
   Future<void> _runStageDesktop(ConsoleSession c, String id) async {
-    final tc = DesktopToolchain();
+    final runner = _desktopRunner;
+    if (runner == null) {
+      stages[id]!.state = 'FAILED';
+      _line(c, '桌面环境未初始化，无法安装', _cErr);
+      return;
+    }
     c.beginTask();
     try {
       _line(c, strings.preparingP(partNames[id] ?? id));
-      final st0 = await tc.status();
-      if (id == 'android_jdk' && st0.jdk) {
-        _line(c, 'JDK 已就绪', _cOk);
-        stages[id]!.state = 'DONE';
-        notifyListeners();
-      } else if (id == 'android_sdk' &&
-          st0.androidSdk &&
-          st0.aapt2 &&
-          st0.platform) {
-        _line(c, 'Android SDK 已就绪', _cOk);
-        stages[id]!.state = 'DONE';
-        notifyListeners();
-      } else if (id == 'flutter_tools' && st0.git) {
-        _line(c, 'Git 已就绪', _cOk);
-        stages[id]!.state = 'DONE';
-        notifyListeners();
-      } else if (id == 'flutter_sdk' && st0.flutter) {
-        _line(c, 'Flutter 已就绪', _cOk);
-        stages[id]!.state = 'DONE';
-        notifyListeners();
-      } else if (_desktopNotRequired.contains(id)) {
-        _line(c, '桌面端无需安装，跳过', _cOk);
-        stages[id]!.state = 'DONE';
-        notifyListeners();
-      } else {
-        final Stream<String> stream;
-        switch (id) {
-          case 'android_jdk':
-            stream = tc.install(flutter: false, androidSdk: false);
-          case 'android_sdk':
-            stream = tc.install(flutter: false);
-          case 'flutter_tools':
-            stream = tc.install(androidSdk: false, flutter: true);
-          case 'flutter_sdk':
-            stream = tc.install(androidSdk: false);
-          default:
-            stream = const Stream<String>.empty();
+      await for (final event in runner.runStage(id)) {
+        if (c.disposed || c.stopRequested) {
+          if (stages[id]!.state == 'RUNNING') stages[id]!.state = 'PENDING';
+          break;
         }
-        await for (final line in stream) {
-          if (c.disposed || c.stopRequested) break;
-          _line(c, line);
+        if (event is LogEvent) {
+          _line(c, event.line);
+        } else if (event is ProgressEvent) {
+          _progress(c, event.text);
+        } else if (event is VersionEvent) {
+          stages[id]!.version = event.version;
+          notifyListeners();
+        } else if (event is StageEvent) {
+          stages[id]!.state = event.state;
+          notifyListeners();
         }
-        final st = await tc.status();
-        final ok = switch (id) {
-          'android_jdk' => st.jdk,
-          'flutter_tools' => st.git,
-          'android_sdk' => st.androidSdk && st.aapt2 && st.platform,
-          'flutter_sdk' => st.flutter,
-          _ => true,
-        };
-        if (ok) {
-          stages[id]!.state = 'DONE';
-          _line(c, strings.pInstalled(partNames[id] ?? id), _cOk);
-        } else {
-          stages[id]!.state = 'FAILED';
-          _line(c, '安装未完成，请看上面的输出', _cErr);
-        }
-        notifyListeners();
       }
-    } catch (e) {
+      if (stages[id]!.state == 'DONE') {
+        _line(c, strings.pInstalled(partNames[id] ?? id), _cOk);
+      } else if (stages[id]!.state == 'RUNNING') {
+        stages[id]!.state = 'FAILED';
+      }
+    } catch (error) {
       stages[id]!.state = 'FAILED';
-      _line(c, '安装失败: $e', _cErr);
+      _line(c, '安装失败：$error', _cErr);
     } finally {
       if (!c.disposed) {
         c.endTask(code: stages[id]!.state == 'DONE' ? 0 : 1);
       }
+      notifyListeners();
     }
+  }
+
+  /// 桌面端按组件安装（版本目录）：走 sdkmanager / 官方 Flutter 清单，不跑脚本。
+  Future<void> _installCatalogDesktop(CatalogEntry entry) async {
+    if (busy || _desktopRunner == null) {
+      _term(strings.aTaskIsRunningWaitBeforeInstalling, color: _cWarn);
+      return;
+    }
+    if (!_canMutate()) return;
+    installing = true;
+    AndroidBuildWrapper.installing = true;
+    notifyListeners();
+    final c = _openConsole(strings.installP(entry.name), SessionKind.temp);
+    c.beginTask();
+    try {
+      await for (final event in _desktopRunner!.installCatalogEntry(entry)) {
+        if (c.disposed || c.stopRequested) break;
+        if (event is LogEvent) {
+          _line(c, event.line);
+        } else if (event is ProgressEvent) {
+          _progress(c, event.text);
+        } else if (event is VersionEvent) {
+          _onPtyText('${event.marker}\n');
+        } else if (event is StageEvent) {
+          _onPtyText('${event.marker}\n');
+        }
+      }
+      _line(c, '安装流程结束', _cOk);
+    } catch (error) {
+      _line(c, '安装失败：$error', _cErr);
+    } finally {
+      if (!c.disposed) c.endTask(code: 0);
+      installing = false;
+      AndroidBuildWrapper.installing = false;
+      notifyListeners();
+      await _refreshStatus(c);
+    }
+  }
+
+  /// 桌面端删除组件（单版本：不支持切换，只允许删除后重装）。
+  Future<void> _changeInstalledDesktop(
+    InstalledToolchain tool, {
+    bool delete = false,
+  }) async {
+    if (!delete) {
+      _term('桌面端仅维护单份 Flutter/组件，暂不支持多版本切换；可删除后重新安装', color: _cWarn);
+      return;
+    }
+    if (busy || _desktopRunner == null || !_canMutate()) return;
+    installing = true;
+    AndroidBuildWrapper.installing = true;
+    notifyListeners();
+    final c = _openConsole('删除 ${tool.title}', SessionKind.temp);
+    c.beginTask();
+    try {
+      await _desktopRunner!.uninstall(tool);
+      _line(c, '已删除 ${tool.title}', _cOk);
+    } catch (error) {
+      _line(c, '删除失败：$error', _cErr);
+    } finally {
+      if (!c.disposed) c.endTask(code: 0);
+      installing = false;
+      AndroidBuildWrapper.installing = false;
+      notifyListeners();
+      await _refreshStatus(c);
+    }
+  }
+
+  /// 桌面端网络探测：纯 Dart HttpClient，输出同一 `__NET__` 协议。
+  Future<void> _probeNetworkDesktop() async {
+    if (busy || _desktopRunner == null) return;
+    checking = true;
+    netPaths.clear();
+    notifyListeners();
+    final c = _openConsole(strings.networkCheck, SessionKind.temp);
+    try {
+      await for (final result in NetProbe().probeAll()) {
+        if (c.disposed || c.stopRequested) break;
+        _line(c, '${result.ok ? '✓' : '✗'} ${result.name}：${result.detail}');
+        _onPtyText('${result.marker}\n');
+      }
+    } catch (error) {
+      _line(c, '网络检测失败：$error', _cErr);
+    } finally {
+      checking = false;
+      notifyListeners();
+    }
+  }
+
+  /// 离线跳过 Flutter 预热（写标记文件，结构判据视为完成）。
+  Future<void> skipWarmup() async {
+    final runner = _desktopRunner;
+    if (runner == null) return;
+    await runner.skipWarmup();
+    stages['flutter_warmup']!.state = 'DONE';
+    notifyListeners();
+    await refreshStatus();
   }
 
   /// 就绪组件的安装体积 + 展开子项(du), 失败静默——纯展示信息。
   Future<void> _loadSizes() async {
     if (isDesktopPlatform) {
       try {
-        final tc = DesktopToolchain();
+        final tc = DesktopToolchain(home: home);
         final fs = LocalFs.instance;
         void setSize(String id, int bytes) {
           if (!stages.containsKey(id) || bytes <= 0) return;
@@ -683,7 +783,7 @@ class EnvironmentController extends ChangeNotifier {
   /// 顺序在真终端里执行(失败即停, 后续 BLOCKED)。
   /// 停止旗标只有会话这一份(终端头部的停止按钮直接 stop 会话), 每步做完看一眼。
   Future<void> startPipeline() async {
-    if (busy || _runner == null || !_canMutate()) return;
+    if (busy || !_hasRunner || !_canMutate()) return;
     pipelineRunning = true;
     AndroidBuildWrapper.installing = true;
     // 整个安装共用一个 run 控制台: 能停(⏹, 输出留着,「继续安装」重跑)能删(✕)
@@ -693,7 +793,7 @@ class EnvironmentController extends ChangeNotifier {
       await _refreshStatus(c);
       if (_stopped(c)) return;
       // ① bootstrap: 下载自建产物(校验) → 原生全量解压(bash/软链/权限)
-      if (stages['bootstrap']!.state != 'DONE') {
+      if (!isDesktopPlatform && stages['bootstrap']!.state != 'DONE') {
         stages['bootstrap']!.state = 'RUNNING';
         notifyListeners();
         // 这一步在 Dart 侧原生完成、没有 PTY 进程; 登记为会话任务, 终端头部
