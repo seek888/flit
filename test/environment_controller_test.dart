@@ -7,10 +7,16 @@ import 'package:flit/features/environment/toolchain_catalog.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:flit/core/host_platform.dart';
+
 import 'support/fake_session_process.dart';
 import 'support/flit_plugins.dart';
+import 'support/host_platform.dart';
 
 void main() {
+  // 本组断言的是 Android 安装脚本语义（flit/env mock + check.sh）。
+  // Windows CI 宿主上必须固定成 Android，否则产品代码会走桌面分支绕过桩。
+  useHostPlatform(HostPlatform.android);
   final binding = TestWidgetsFlutterBinding.ensureInitialized();
   late Directory root;
   late EnvironmentController environment;

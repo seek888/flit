@@ -1,5 +1,6 @@
 import 'package:flit/l10n/strings.dart';
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -7,6 +8,8 @@ import 'package:provider/provider.dart';
 import '../../core/theme.dart';
 import '../../core/page_layout.dart';
 
+import '../../services/desktop_toolchain.dart';
+import '../../services/paths.dart';
 import '../../services/shell.dart';
 import '../workspace/project_session.dart';
 import '../terminal/console_session.dart';
@@ -63,8 +66,10 @@ class _ProjectsPageState extends State<ProjectsPage> {
         .catchError((_) => <dynamic, dynamic>{});
     final home = (status['home'] as String? ?? '').trim();
     final root = home.isNotEmpty
-        ? '$home/projects'
-        : '/data/user/0/com.seek888.flit/files/home/projects';
+        ? (isDesktopPlatform ? joinPath(home, 'projects') : '$home/projects')
+        : (isDesktopPlatform
+              ? DesktopToolchain().projectsDir
+              : '/data/user/0/com.seek888.flit/files/home/projects');
     if (!mounted) return;
     final projects = ProjectList(
       root: root,
@@ -89,9 +94,11 @@ class _ProjectsPageState extends State<ProjectsPage> {
   void _checkActiveProject(String path) {
     final active = context.read<ProjectWorkspace>().active;
     if (active == null || active.closed) return;
-    if (path == active.path ||
-        path.startsWith('${active.path}/') ||
-        active.path.startsWith('$path/')) {
+    // 列表项路径与工程打开路径可能来自不同拼接点（Windows 分隔符/大小写），
+    // 直接比字符串会漏判，导致"正在打开的工程"被改名/删除。
+    if (samePath(path, active.path) ||
+        relativeInside(active.path, path) != null ||
+        relativeInside(path, active.path) != null) {
       throw StateError(
         context.strings.closeThisProjectBeforeRenamingOrDeleting,
       );
@@ -118,11 +125,16 @@ class _ProjectsPageState extends State<ProjectsPage> {
     builder: (context) => AlertDialog(
       title: Text(context.strings.whereAreProjectsStored),
       content: Text(
-        (context.strings.projectDirectoryP(_projectsRoot ?? '') +
-            context.strings.uninstallingTheAppOrClearingItsData +
-            context.strings.pushToGithubFromVersionControl +
-            context.strings.openFilesFlitProjectsAndCopyThe +
-            context.strings.longPressAFileInTheEditor),
+        // 桌面专属文案先硬编码（不随 Android 的"卸载即删"语义，见 l10n 清单）。
+        isDesktopPlatform
+            ? '工程目录：${_projectsRoot ?? ''}\n\n'
+                  '桌面端工程放在本机应用目录，卸载应用不会删除工程；'
+                  '可直接用资源管理器打开、压缩备份，或推送到 GitHub 仓库。'
+            : (context.strings.projectDirectoryP(_projectsRoot ?? '') +
+                  context.strings.uninstallingTheAppOrClearingItsData +
+                  context.strings.pushToGithubFromVersionControl +
+                  context.strings.openFilesFlitProjectsAndCopyThe +
+                  context.strings.longPressAFileInTheEditor),
       ),
       actions: [
         TextButton(
@@ -207,15 +219,26 @@ class _ProjectsPageState extends State<ProjectsPage> {
       _busy = true;
       _termExpanded = true;
       _pendingName = params.name;
-      _pendingProjectPath = '${params.projectRoot}/${params.name}';
+      _pendingProjectPath = joinPath(params.projectRoot, params.name);
       _pendingMarker = 'create';
     });
-    await _runTask(
-      params.type == 'dart'
+    final String command;
+    if (isDesktopPlatform) {
+      // 桌面端没有 bash：目录用 Dart 建，flutter/dart create 参数化直跑。
+      try {
+        Directory(params.projectRoot).createSync(recursive: true);
+      } catch (error) {
+        setState(() => _busy = false);
+        _snack('$error');
+        return;
+      }
+      command = buildDesktopCreateCommand(params);
+    } else {
+      command = params.type == 'dart'
           ? buildDartCreateCommand(params)
-          : buildFlutterCreateCommand(params),
-      openOnSuccess: true,
-    );
+          : buildFlutterCreateCommand(params);
+    }
+    await _runTask(command, openOnSuccess: true);
   }
 
   /// 克隆 Git 仓库到工程根: 独立终端里跑, 完成后只刷新列表——
@@ -381,7 +404,9 @@ class _ProjectsPageState extends State<ProjectsPage> {
             SizedBox(width: 8),
             Expanded(
               child: Text(
-                context.strings.projectsAreStoredInTheAppAnd,
+                isDesktopPlatform
+                    ? '工程保存在本机应用目录，可直接用资源管理器打开'
+                    : context.strings.projectsAreStoredInTheAppAnd,
                 style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
               ),
             ),

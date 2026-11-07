@@ -5,6 +5,7 @@ import 'package:flit_device/flit_device.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../core/host_platform.dart';
 import '../../core/page_layout.dart';
 import '../../core/theme.dart';
 import '../../services/shell.dart';
@@ -31,6 +32,9 @@ class _DevicePairingGuidePageState extends State<DevicePairingGuidePage>
   @override
   void initState() {
     super.initState();
+    // 桌面端没有 FlitDevice 的通知式配对通道：入口已在设备页隐藏，
+    // 这里再兜底一次，避免误调 permission_handler / 原生通道。
+    if (isDesktopPlatform) return;
     WidgetsBinding.instance.addObserver(this);
     unawaited(_check());
   }
@@ -88,7 +92,24 @@ class _DevicePairingGuidePageState extends State<DevicePairingGuidePage>
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) {
+    if (isDesktopPlatform) {
+      return Scaffold(
+        appBar: AppBar(title: Text(context.strings.wirelessPairingGuide)),
+        body: const PageList(
+          children: [
+            PageIntro(
+              '桌面版不支持通知式无线配对',
+              '请使用 USB 连接；需要无线调试时，在设备页的「手动连接」里直接 adb pair / adb connect。',
+            ),
+          ],
+        ),
+      );
+    }
+    return _buildBody(context);
+  }
+
+  Widget _buildBody(BuildContext context) => Scaffold(
     appBar: AppBar(title: Text(context.strings.wirelessPairingGuide)),
     body: PageList(
       children: [

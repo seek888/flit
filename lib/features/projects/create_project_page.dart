@@ -1,8 +1,12 @@
 import 'package:flit/l10n/strings.dart';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../../core/theme.dart';
 import '../../core/page_layout.dart';
+import '../../services/console_command.dart';
+import '../../services/paths.dart';
 import '../../services/shell.dart';
 
 /// 新建项目参数(页面 → 工作台的返回值)
@@ -50,6 +54,50 @@ String buildFlutterCreateCommand(CreateProjectParams p) {
   return "mkdir -p ${shQuote(p.projectRoot)} && cd ${shQuote(p.projectRoot)} && "
       "flutter create --no-pub ${flags.join(' ')} ${shQuote(p.name)}";
 }
+
+/// 桌面端 flutter create 的参数数组：不拼 shell，也不再有 `mkdir -p` / `cd`
+/// 前缀——目标目录由调用方用 Dart 建好（桌面没有 bash）。
+List<String> flutterCreateArgs(CreateProjectParams p) => <String>[
+  'create',
+  '--no-pub',
+  '--platforms=${p.platforms.join(',')}',
+  '--org',
+  p.org,
+  if (p.empty) '--empty',
+  if (p.platforms.contains('android') && p.androidLang == 'java') ...<String>[
+    '-a',
+    'java',
+  ],
+  if (p.description.trim().isNotEmpty) ...<String>[
+    '--description',
+    p.description.trim(),
+  ],
+  p.name,
+];
+
+/// 桌面端 dart create 的参数数组（见 [flutterCreateArgs]）。
+List<String> dartCreateArgs(CreateProjectParams p) => <String>[
+  'create',
+  '--no-pub',
+  '--template',
+  p.template,
+  p.name,
+];
+
+/// 桌面端执行"新建项目"的命令行（参数数组 → cmd 安全的单行命令）。
+///
+/// 目录已由调用方建好，所以这里没有 `cd`/`mkdir -p`；工具名交给 cmd 的
+/// PATHEXT 解析（flutter.bat / dart.exe 都能找到）。Android 仍用
+/// [buildDartCreateCommand] / [buildFlutterCreateCommand]（bash 包装）。
+String buildDesktopCreateCommand(CreateProjectParams p) {
+  final tool = p.type == 'dart' ? 'dart' : 'flutter';
+  final args = p.type == 'dart' ? dartCreateArgs(p) : flutterCreateArgs(p);
+  return '$tool ${args.map(_cmdArgument).join(' ')}';
+}
+
+/// 参数里只有空白/引号/cmd 元字符时才需要加引号。
+String _cmdArgument(String value) =>
+    RegExp(r'[\s"&|<>^%!]').hasMatch(value) ? quoteForCmd(value) : value;
 
 /// dart 保留字/系统保留名: 用作包名会直接编译炸, 提前拦
 const _reservedNames = {
@@ -123,18 +171,11 @@ class _CreateProjectPageState extends State<CreateProjectPage> {
       _toolDetail = '';
     });
     try {
-      final result = await Shell.instance.exec(
-        '${terminalEnvSource}command -v $tool >/dev/null 2>&1 || exit 127; $tool --version',
-        timeoutMs: 120000,
-      );
+      final (status, detail) = await _runToolCheck(tool);
       if (!mounted || sequence != _checkSequence) return;
       setState(() {
-        _tool = switch (result['exitCode']) {
-          0 => _ToolCheck.ok,
-          127 => _ToolCheck.missing,
-          _ => _ToolCheck.broken,
-        };
-        _toolDetail = (result['output'] as String? ?? '').trim();
+        _tool = status;
+        _toolDetail = detail;
       });
     } catch (error) {
       if (!mounted || sequence != _checkSequence) return;
@@ -143,6 +184,41 @@ class _CreateProjectPageState extends State<CreateProjectPage> {
         _toolDetail = '$error';
       });
     }
+  }
+
+  /// 预检: 桌面端直接问 Shell.hasBinary/which（`command -v` 的 shim 在
+  /// Windows 上对 .bat 会拼错后缀，不可靠），再用 cmd 跑一次 --version
+  /// 证明"能找到且能执行"。
+  Future<(_ToolCheck, String)> _runToolCheck(String tool) async {
+    if (!isDesktopPlatform) {
+      final result = await Shell.instance.exec(
+        '${terminalEnvSource}command -v $tool >/dev/null 2>&1 || exit 127; $tool --version',
+        timeoutMs: 120000,
+      );
+      return (
+        switch (result['exitCode']) {
+          0 => _ToolCheck.ok,
+          127 => _ToolCheck.missing,
+          _ => _ToolCheck.broken,
+        },
+        (result['output'] as String? ?? '').trim(),
+      );
+    }
+    if (!Shell.instance.hasBinary(tool)) {
+      return (_ToolCheck.missing, '');
+    }
+    // which() 在部分平台会把 .bat 拼成 .exe；拿不到真实文件就退回工具名，
+    // 交给 cmd 的 PATHEXT / PATH 解析（flutter.bat 可执行）。
+    var exe = Shell.instance.which(tool) ?? tool;
+    if (!File(exe).existsSync()) exe = tool;
+    final result = await Shell.instance.exec(
+      '${quoteForCmd(exe)} --version',
+      timeoutMs: 120000,
+    );
+    final output = (result['output'] as String? ?? '').trim();
+    return result['exitCode'] == 0
+        ? (_ToolCheck.ok, output)
+        : (_ToolCheck.broken, output);
   }
 
   String? get _nameError {
@@ -185,19 +261,32 @@ class _CreateProjectPageState extends State<CreateProjectPage> {
       _error = null;
     });
     try {
-      final path = shQuote('${widget.projectRoot}/${params.name}');
-      final result = await Shell.instance.exec(
-        '[ -e $path ] || [ -L $path ]',
-        timeoutMs: 15000,
-      );
+      final target = joinPath(widget.projectRoot, params.name);
+      final bool? exists;
+      if (isDesktopPlatform) {
+        exists =
+            FileSystemEntity.typeSync(target, followLinks: false) !=
+            FileSystemEntityType.notFound;
+      } else {
+        final path = shQuote(target);
+        final result = await Shell.instance.exec(
+          '[ -e $path ] || [ -L $path ]',
+          timeoutMs: 15000,
+        );
+        exists = switch (result['exitCode']) {
+          0 => true,
+          1 => false,
+          _ => null,
+        };
+      }
       if (!mounted) return;
-      if (result['exitCode'] == 0) {
+      if (exists == true) {
         setState(
           () => _error = context.strings.projectPAlreadyExistsChooseAnotherName(
             params.name,
           ),
         );
-      } else if (result['exitCode'] == 1) {
+      } else if (exists == false) {
         Navigator.pop(context, params);
       } else {
         setState(
@@ -491,7 +580,7 @@ class _CreateProjectPageState extends State<CreateProjectPage> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          '\$HOME/${_name.text.trim()}',
+                          joinPath(widget.projectRoot, _name.text.trim()),
                           style: AppColors.mono,
                         ),
                       ],

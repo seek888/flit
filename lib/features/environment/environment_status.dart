@@ -52,29 +52,15 @@ class EnvironmentStatus {
   );
 
   /// 桌面端：直接查私有工具链目录，不跑 bash 脚本。
-  /// 输出与 check.sh 相同的 __STAGE__ 标记，UI 的阶段卡片照旧工作。
+  /// 判定与安装共用一个映射源（ToolchainStatus.toStageMarkers），输出与
+  /// check.sh 相同的 `__STAGE__/__VER__` 标记，UI 的阶段卡片照旧工作。
   static Future<EnvironmentStatus> _inspectDesktop() async {
     try {
-      final tc = DesktopToolchain();
-      final st = await tc.status();
-      final states = <String, bool>{
-        'android_jdk': st.jdk,
-        'android_ndk': true, // 桌面用官方 SDK；NDK 按需另装，不阻塞基本构建
-        'android_cmake': true,
-        'android_gradle': true, // Gradle Wrapper 自己下载到 GRADLE_USER_HOME
-        'android_sdk': st.androidSdk && st.aapt2 && st.platform,
-        'flutter_tools': st.git, // git+gh：桌面端用 MinGit 便携版
-        'flutter_sdk': st.flutter,
-        'flutter_warmup': true,
-      };
-      final buf = StringBuffer();
-      states.forEach((id, ok) {
-        buf.writeln('__STAGE__$id:${ok ? 'DONE' : 'MISSING'}');
-      });
-      final allOk = states.values.every((v) => v);
+      final markers = DesktopToolchain().probe.inspect().toStageMarkers();
+      final allOk = markers.every((marker) => marker.ok);
       return EnvironmentStatus.fromCheck(
         exitCode: allOk ? 0 : 1,
-        output: buf.toString(),
+        output: stageMarkerTextOf(markers),
       );
     } catch (_) {
       return const EnvironmentStatus(bootstrapped: true, checkFailed: true);

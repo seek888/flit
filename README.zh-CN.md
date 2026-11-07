@@ -56,6 +56,18 @@ Flit 支持编辑 Dart 代码、在设备上构建应用、通过无线 ADB 运�
 
 工程保存在应用私有的 `files/home/projects` 目录中。**卸载 Flit 或清除应用数据会删除这些工程。** 请使用 Git 备份，或通过**文件 → Flit 工程**复制。GitHub 登录是可选功能，本地开发不需要账户。
 
+## Windows 桌面版
+
+这个 fork 同时提供 **Windows 桌面版**：在 Windows 上创建/克隆 Flutter 工程、借助分析服务器编辑代码、
+在集成终端里运行 Flutter/Dart/Git/ADB 命令、管理 Git 并推送到 GitHub，以及打包出 **Android APK** 与 **Web 产物**。
+
+从 Releases 下载 `FlitSetup-<版本>-x64.exe`（per-user 安装包，无需管理员权限）或便携版
+`flit-windows-x64-*.zip`。桌面工具链（Temurin JDK 17、Android SDK、Flutter、MinGit）在首次使用时
+安装到 `%LOCALAPPDATA%\FlitDesk`，不修改系统 PATH 与注册表。GitHub 登录使用个人访问令牌（PAT），
+凭据保存在应用私有 git 配置里，之后私有仓库克隆与推送无需再次输入。
+
+安装、环境配置、PAT 登录、构建命令与已知限制见 [docs/windows-desktop.md](docs/windows-desktop.md)。
+
 ## 工作原理
 
 在手机上跑通 Flutter 构建链的关键，是分清构建环节里什么可直接复用、什么必须重新编译：Gradle、`d8`、`apksigner` 和 flutter_tools 是 JVM/Dart VM 上的字节码，`android.jar` 与引擎产物是纯数据——这些天然可移植；`aapt2`、`aidl`、`zipalign`、Dart VM、`gen_snapshot` 和 clang 是必须在本机执行的原生 ELF，官方只提供 x86_64 glibc 版本，需要以 bionic 为目标交叉编译。移植按三层展开：自建 Termux 用户空间（bootstrap 与 APT 包）提供 shell 和包管理；交叉编译 Android SDK/NDK/CMake 宿主工具，官方数据与元信息原样保留；交叉编译 Flutter/Dart 宿主工具并复用官方 Android 引擎产物。Gradle 与 AGP 原样复用，通过 `android.aapt2FromMavenOverride` 指向本机 ARM64 AAPT2 并关闭 SDK 自动下载，避免 AGP 拉回桌面版二进制。

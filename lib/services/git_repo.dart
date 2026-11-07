@@ -1,8 +1,12 @@
 import 'package:flit/l10n/strings.dart';
+
+import '../core/host_platform.dart';
+import 'git_process.dart';
 import 'shell.dart';
 
-typedef GitResult = ({int code, String out});
-typedef GitExecute = Future<GitResult> Function(String command);
+export 'git_process.dart' show GitResult;
+
+typedef GitExecute = Future<GitResult> Function(List<String> args);
 
 class GitChange {
   const GitChange(this.x, this.y, this.path, {this.originalPath});
@@ -32,24 +36,54 @@ class GitSnapshot {
   bool get hasConflicts => changes.any((c) => c.conflicted);
 }
 
-/// All arguments are quoted individually. Machine output is never trimmed.
+/// 一个工程的 Git 仓库操作。执行边界是 **参数数组**（[GitExecute]），
+/// 桌面端由 [GitProcess] 直启 `git.exe`，Android 端仍走 PTY bash（把 argv
+/// 渲染成 shQuote 命令串）。业务逻辑（status/diff/分支/冲突）与平台无关。
 class GitRepo {
-  GitRepo(this.root, {GitExecute? execute}) : _execute = execute ?? _shell;
+  GitRepo(this.root, {GitExecute? execute})
+    : _execute = execute ?? defaultExecute(root);
+
   final String root;
   final GitExecute _execute;
+
+  /// 面板据此提示「打开仓库根目录」；只有「目录嵌在父仓库里」会置 false。
   bool supported = true;
 
-  static Future<GitResult> _shell(String command) async {
-    final result = await Shell.instance.exec(command, timeoutMs: 60000);
+  /// 默认执行器：桌面端 argv + Process.run；Android 端保留原有 bash 执行。
+  ///
+  /// Android 不改执行方式是为了不破坏现有功能（flutter_pty bash + env.sh），
+  /// 桌面端 cmd.exe 不认 `VAR=val`/单引号/`</dev/null`，必须换 argv。
+  static GitExecute defaultExecute(String root) {
+    if (isDesktopPlatform) return GitProcess(root).run;
+    return (args) => androidShell(root, args);
+  }
+
+  /// **仅 Android**：把 argv 渲染成 POSIX 命令串（单引号逐个转义）。
+  /// 桌面端不要用：任何 shell 拼串都会在 cmd.exe 上翻车。
+  static String androidCommand(String root, List<String> args) =>
+      'LC_ALL=C GIT_TERMINAL_PROMPT=0 '
+      'GIT_SSH_COMMAND=${shQuote('ssh -o BatchMode=yes -o StrictHostKeyChecking=yes')} '
+      'git --no-pager --literal-pathspecs -c core.quotepath=false -c color.ui=false '
+      '-C ${shQuote(root)} ${args.map(shQuote).join(' ')}';
+
+  /// **仅 Android**：经 flit_env 的 bash 执行（PTY 环境在启动时冻结，
+  /// 需要 source env.sh，由 [Shell.exec] 侧处理）。
+  static Future<GitResult> androidShell(String root, List<String> args) async {
+    final result = await Shell.instance.exec(
+      '${terminalEnvSource}${androidCommand(root, args)}',
+      timeoutMs: 60000,
+    );
     return (
       code: result['exitCode'] as int? ?? -1,
       out: result['output'] as String? ?? '',
     );
   }
 
-  String command(List<String> args) =>
-      'LC_ALL=C GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=${shQuote('ssh -o BatchMode=yes -o StrictHostKeyChecking=yes')} git --no-pager --literal-pathspecs -c core.quotepath=false -c color.ui=false -C ${shQuote(root)} ${args.map(shQuote).join(' ')}';
-  Future<GitResult> run(List<String> args) => _execute(command(args));
+  /// 终端里展示的等价命令（只显示，不执行）。
+  String display(List<String> args) => GitProcess.display(args);
+
+  Future<GitResult> run(List<String> args) => _execute(args);
+
   Future<String> checked(List<String> args) async {
     final result = await run(args);
     if (result.code != 0) {

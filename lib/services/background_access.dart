@@ -4,12 +4,15 @@ import 'package:flit_device/flit_device.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
+import '../core/host_platform.dart';
 import '../features/settings/appearance_preferences.dart';
 
 /// 首次初始化前说明后台运行用途；每项设置都在对话框内直接发起。
 /// 权限入口与设置页共用，拒绝后可在设置页再次调整。
 class BackgroundAccess {
   static Future<void> explain(BuildContext context) async {
+    // 桌面端没有前台服务/电池优化概念，也不需要通知权限：直接跳过。
+    if (isDesktopPlatform) return;
     final preferences = context.read<AppearancePreferences>();
     if (preferences.backgroundNoticeShown) return;
 

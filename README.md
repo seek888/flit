@@ -4,7 +4,7 @@
 
 <h1 align="center">Flit</h1>
 
-<p align="center">A Flutter development workspace for Android.</p>
+<p align="center">A Flutter development workspace for Android and Windows desktop.</p>
 
 <p align="center">
   <a href="https://github.com/lycstar/flit/releases"><img src="https://img.shields.io/github/v/release/lycstar/flit?include_prereleases&amp;label=preview&amp;color=39BFEA" alt="Latest preview" /></a>
@@ -55,6 +55,23 @@ Application ID: `com.seek888.flit` · Android 7.0+ · arm64-v8a
 Wireless pairing on the same device requires Android 11+ and wireless debugging enabled in Developer options. Manual host/port connection is available for an already configured ADB endpoint. Pairing history is not proof of a current connection: Flit checks the device state reported by ADB.
 
 Projects live in the app’s private `files/home/projects` directory. **Uninstalling Flit or clearing its data deletes those projects.** Back them up with Git or copy them through **Files → Flit Projects**. GitHub authentication is optional; local development does not require an account.
+
+## Windows desktop
+
+This fork also runs as a **Windows desktop** workspace. In Flit on Windows you can create
+or clone a Flutter project, edit it with analysis-server support, run Flutter/Dart/Git/ADB
+commands from the integrated terminal, manage Git and push to GitHub, and build **Android
+APKs** and **Web artifacts**.
+
+Download `FlitSetup-<version>-x64.exe` (per-user installer, no administrator rights) or the
+portable `flit-windows-x64-*.zip` from Releases. The desktop toolchain — Temurin JDK 17,
+Android SDK, Flutter and MinGit — is installed into `%LOCALAPPDATA%\FlitDesk` on first run
+and does not modify the system PATH or registry. GitHub sign-in uses a personal access token
+that is kept in an app-private git configuration, so private clones and pushes work
+non-interactively.
+
+See [docs/windows-desktop.md](docs/windows-desktop.md) for installation, environment setup,
+GitHub PAT sign-in, build commands and known limitations.
 
 ## How it works
 

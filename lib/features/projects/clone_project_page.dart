@@ -1,9 +1,16 @@
 import 'package:flit/l10n/strings.dart';
-import 'package:flutter/material.dart';
+import 'dart:io';
 
-import '../../core/theme.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../../core/host_platform.dart';
 import '../../core/page_layout.dart';
+import '../../core/theme.dart';
+import '../../services/git_process.dart';
+import '../../services/paths.dart';
 import '../../services/shell.dart';
+import '../git/github_account.dart';
 import '../git/github_account_tile.dart';
 
 /// 克隆参数(页面 → 工作台的返回值)
@@ -14,6 +21,7 @@ class CloneProjectParams {
     required this.branch,
     required this.shallow,
     required this.targetDir,
+    this.preCloned = false,
   });
 
   final String url;
@@ -23,6 +31,19 @@ class CloneProjectParams {
 
   /// 克隆目标目录(工程根 $HOME/projects)。
   final String targetDir;
+
+  /// 桌面端：页面里已经用 Dart + GitProcess 真正克隆完了，工程列表侧的
+  /// 终端任务只需跑一个空命令（Android 仍由终端会话执行 git clone）。
+  final bool preCloned;
+
+  CloneProjectParams copyWith({bool? preCloned}) => CloneProjectParams(
+    url: url,
+    dirName: dirName,
+    branch: branch,
+    shallow: shallow,
+    targetDir: targetDir,
+    preCloned: preCloned ?? this.preCloned,
+  );
 }
 
 /// 从 URL 推导仓库名(目标目录默认值); 支持https/git@/ssh 形态
@@ -36,6 +57,9 @@ String repoNameFromUrl(String url) {
 
 /// 组装独立任务命令，保留 git 的真实退出码。
 String buildGitCloneCommand(CloneProjectParams p) {
+  // 桌面端克隆已在页面里用 Dart + GitProcess 完成，这里只返回一个空命令，
+  // 让工程列表的「任务→完成→刷新列表」流程照旧走一遍。
+  if (p.preCloned) return 'exit 0';
   final flags = <String>[];
   final branch = p.branch.trim();
   if (branch.isNotEmpty) flags.add('--branch ${shQuote(branch)}');
@@ -99,6 +123,7 @@ class _CloneProjectPageState extends State<CloneProjectPage> {
 
   /// git 预检: 未装 / 在(带版本)。
   Future<void> _runPrecheck() async {
+    if (isDesktopPlatform) return _runDesktopPrecheck();
     try {
       final res = await Shell.instance.exec(
         '${terminalEnvSource}command -v git >/dev/null 2>&1 || exit 127; git --version',
@@ -124,6 +149,49 @@ class _CloneProjectPageState extends State<CloneProjectPage> {
     }
   }
 
+  /// 桌面端预检：不 spawn bash，直接问 GitProcess（MinGit / PATH git）。
+  Future<void> _runDesktopPrecheck() async {
+    try {
+      final result = await GitProcess(
+        Directory.current.path,
+      ).run(['--version']);
+      if (!mounted) return;
+      setState(() {
+        _git = result.code == 0 ? _GitCheck.ok : _GitCheck.missing;
+        _gitDetail = result.out.trim();
+        _gitVersion = _gitDetail.split('\n').first.trim();
+      });
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _git = _GitCheck.broken;
+          _gitDetail = '$error';
+        });
+      }
+    }
+  }
+
+  Future<void> _loginWithToken() async {
+    final account = context.read<GithubAccount>();
+    final token = await showGithubTokenDialog(context);
+    if (token == null || !mounted) return;
+    final ok = await account.loginWithToken(token);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok
+              ? '已登录 GitHub${account.loginName == null ? '' : '：${account.loginName}'}'
+              : account.error ?? '登录失败',
+        ),
+      ),
+    );
+  }
+
+  /// 桌面端 SSH 地址自动转 HTTPS 的提示。
+  String? get _sshNotice =>
+      isDesktopPlatform ? GitProcess.sshNotice(_url) : null;
+
   String get _url => _urlCtrl.text.trim();
 
   /// 目标目录: 留空则使用仓库名称
@@ -145,13 +213,18 @@ class _CloneProjectPageState extends State<CloneProjectPage> {
       _error = null;
     });
     final params = CloneProjectParams(
-      url: _url,
+      // 桌面端 MinGit 不含 ssh.exe：git@github.com:owner/repo.git 自动转 HTTPS。
+      url: isDesktopPlatform ? GitProcess.normalizeUrl(_url) : _url,
       dirName: _dirName,
       branch: _branchCtrl.text.trim(),
       shallow: _shallow,
       targetDir: widget.targetDir,
     );
     try {
+      if (isDesktopPlatform) {
+        await _submitDesktop(params);
+        return;
+      }
       final path = shQuote('${widget.targetDir}/${params.dirName}');
       final result = await Shell.instance.exec(
         '[ -e $path ] || [ -L $path ]',
@@ -177,6 +250,48 @@ class _CloneProjectPageState extends State<CloneProjectPage> {
       }
     } finally {
       if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  /// 桌面端克隆：Dart 建目录 + GitProcess（argv，HTTPS，GIT_TERMINAL_PROMPT=0）。
+  /// 成功后带 `preCloned: true` 返回，工程列表侧只做刷新。
+  Future<void> _submitDesktop(CloneProjectParams params) async {
+    final destination = joinPath(widget.targetDir, params.dirName);
+    final exists =
+        Directory(destination).existsSync() ||
+        File(destination).existsSync() ||
+        Link(destination).existsSync();
+    if (exists) {
+      setState(
+        () => _error = context.strings.pAlreadyExistsChooseAnotherDirectoryName(
+          params.dirName,
+        ),
+      );
+      return;
+    }
+    try {
+      Directory(widget.targetDir).createSync(recursive: true);
+      final result = await GitProcess(widget.targetDir).clone(
+        url: params.url,
+        parentDirectory: widget.targetDir,
+        directory: params.dirName,
+        branch: params.branch,
+        shallow: params.shallow,
+      );
+      if (!mounted) return;
+      if (result.code != 0) {
+        final detail = result.out.trim();
+        setState(
+          () => _error = detail.isEmpty
+              ? context.strings.clonePreflightFailedP(result.code)
+              : detail,
+        );
+        return;
+      }
+      Navigator.pop(context, params.copyWith(preCloned: true));
+    } catch (error) {
+      if (mounted)
+        setState(() => _error = context.strings.clonePreflightFailedP(error));
     }
   }
 
@@ -214,6 +329,17 @@ class _CloneProjectPageState extends State<CloneProjectPage> {
                               hintText: 'https://github.com/user/repo.git',
                             ),
                           ),
+                          if (_sshNotice != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 6),
+                              child: Text(
+                                _sshNotice!,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: AppColors.warn,
+                                ),
+                              ),
+                            ),
                           const SizedBox(height: 12),
                           TextField(
                             controller: _dirCtrl,
@@ -288,6 +414,19 @@ class _CloneProjectPageState extends State<CloneProjectPage> {
                     ),
                     // 第一个项目就是私库时, 这里是唯一能登录的地方
                     const GithubAccountTile(dense: true),
+                    // 桌面端没有 gh CLI：PAT 登录入口（见 GithubAccount.loginWithToken）
+                    if (isDesktopPlatform)
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: _loginWithToken,
+                          icon: const Icon(Icons.vpn_key_outlined, size: 16),
+                          label: const Text(
+                            '使用个人访问令牌（PAT）登录',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -363,7 +502,7 @@ class _CloneProjectPageState extends State<CloneProjectPage> {
         _previewRow(
           context.strings.location,
           Text(
-            _dirName.isEmpty ? '-' : '${widget.targetDir}/$_dirName',
+            _dirName.isEmpty ? '-' : joinPath(widget.targetDir, _dirName),
             style: _valueStyle,
           ),
         ),

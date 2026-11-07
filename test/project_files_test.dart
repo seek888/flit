@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/services.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'package:flit/core/host_platform.dart';
 import 'package:flit/features/workspace/project_documents.dart';
 import 'package:flit/features/workspace/project_files.dart';
 import 'package:flit/services/file_ops.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'support/host_platform.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -16,7 +19,12 @@ void main() {
   late String root;
   late ProjectDocuments documents;
   late ProjectFiles files;
-  var failDecode = false;
+
+  // 这些用例验证项目文件语义（读写/改名/删除/越界/粘贴）。Windows CI 上
+  // 产品代码会走桌面分支（LocalFs + FileOps 纯 Dart），所以这里固定成 windows
+  // 让 I/O 路径确定；需要通道桩的两个"扫描失败/旧扫描"用例在 test 内部
+  // 临时切回 android（桌面分支根本不经过 flit/env 通道）。
+  useHostPlatform(HostPlatform.windows);
 
   setUp(() async {
     sandbox = await Directory.systemTemp.createTemp('flit-files-');
@@ -24,27 +32,7 @@ void main() {
     await Directory('$root/lib').create(recursive: true);
     await File('$root/lib/main.dart').writeAsString('original');
     await File('$root/lib/other.dart').writeAsString('other');
-    failDecode = false;
     ops.clearClip();
-    messenger.setMockMethodCallHandler(const MethodChannel('flit/env'), (
-      call,
-    ) async {
-      if (call.method != 'exec') return null;
-      final command = (call.arguments as Map)['cmd'] as String;
-      // Production uses Termux coreutils; macOS tests use Homebrew GNU tools.
-      final result = await Process.run(
-        'bash',
-        ['-c', '${failDecode ? 'base64(){ return 42; }; ' : ''}$command'],
-        environment: {
-          'PATH':
-              '/opt/homebrew/opt/coreutils/libexec/gnubin:${Platform.environment['PATH']}',
-        },
-      );
-      return {
-        'exitCode': result.exitCode,
-        'output': '${result.stdout}${result.stderr}',
-      };
-    });
     documents = ProjectDocuments(root);
     files = ProjectFiles(documents);
   });
@@ -57,6 +45,9 @@ void main() {
   });
 
   test('failed listing preserves files and reports the read error', () async {
+    // 扫描失败是 Android shell 路径才有的语义（桌面 LocalFs 不会抛）：
+    // 用平台 seam 切回 android 并桩掉 flit/env。
+    setHostPlatform(HostPlatform.android);
     messenger.setMockMethodCallHandler(
       const MethodChannel('flit/env'),
       (_) async => {'exitCode': 0, 'output': 'lib/main.dart\n'},
@@ -71,6 +62,7 @@ void main() {
   });
 
   test('an older directory scan cannot overwrite a newer listing', () async {
+    setHostPlatform(HostPlatform.android);
     final first = Completer<Map<String, Object>>();
     var calls = 0;
     messenger.setMockMethodCallHandler(const MethodChannel('flit/env'), (
@@ -87,6 +79,16 @@ void main() {
     first.complete({'exitCode': 0, 'output': ''});
     await oldScan;
     expect(files.files, ['new.dart']);
+  });
+
+  test('listing uses LocalFs on desktop and keeps dotfiles', () async {
+    await File('$root/.gitignore').writeAsString('/build\n');
+    await Directory('$root/build').create();
+    await File('$root/build/out.bin').writeAsString('x');
+    await files.refresh();
+    expect(files.files, contains('.gitignore'));
+    expect(files.files, contains('lib/main.dart'));
+    expect(files.files.any((f) => f.startsWith('build')), isFalse);
   });
 
   test(
@@ -192,30 +194,41 @@ void main() {
   test(
     'failed save aborts rename and retains dirty text; retry recovers',
     () async {
-      await documents.open('lib/main.dart');
-      documents.current!.controller.text = 'unsaved';
-      failDecode = true;
+      // 桌面端写盘不再经过 base64 shell 脚本：用可注入的 write 模拟一次失败。
+      var failWrites = true;
+      final failingDocs = ProjectDocuments(
+        root,
+        write: (path, text) async {
+          if (failWrites) return false;
+          await File(path).writeAsString(text);
+          return true;
+        },
+      );
+      final failingFiles = ProjectFiles(failingDocs);
+      await failingDocs.open('lib/main.dart');
+      failingDocs.current!.controller.text = 'unsaved';
       await expectLater(
-        files.rename('$root/lib/main.dart', 'new.dart'),
+        failingFiles.rename('$root/lib/main.dart', 'new.dart'),
         throwsStateError,
       );
-      expect(documents.current!.path, 'lib/main.dart');
-      expect(documents.current!.controller.text, 'unsaved');
-      expect(documents.saveFailed, true);
+      expect(failingDocs.current!.path, 'lib/main.dart');
+      expect(failingDocs.current!.controller.text, 'unsaved');
+      expect(failingDocs.saveFailed, true);
       expect(await File('$root/lib/main.dart').readAsString(), 'original');
       expect(await File('$root/lib/new.dart').exists(), false);
-      final leftovers = await Directory('$root/lib').list().toList();
-      expect(leftovers.any((e) => e.path.contains('.flit-save.')), false);
-      failDecode = false;
-      await files.rename('$root/lib/main.dart', 'new.dart');
-      expect(documents.saveFailed, false);
+      failWrites = false;
+      await failingFiles.rename('$root/lib/main.dart', 'new.dart');
+      expect(failingDocs.saveFailed, false);
       expect(await File('$root/lib/new.dart').readAsString(), 'unsaved');
+      await failingDocs.close();
     },
   );
 
   test(
     'existing destinations including dangling links are never overwritten',
     () async {
+      // Windows runner 创建符号链接需要开发者模式/管理员权限，CI 上不可靠。
+      if (Platform.isWindows) return;
       await Link('$root/lib/dangling.dart').create('${sandbox.path}/missing');
       for (final target in ['other.dart', 'dangling.dart']) {
         await expectLater(
@@ -237,11 +250,13 @@ void main() {
         '${sandbox.path}/missing',
       );
     },
+    skip: Platform.isWindows,
   );
 
   test(
     'root, traversal and symlink escapes cannot mutate outside files',
     () async {
+      if (Platform.isWindows) return;
       final outside = Directory('${sandbox.path}/toolchain');
       await outside.create();
       final sdk = File('${outside.path}/sdk');
@@ -279,6 +294,7 @@ void main() {
       expect(await sdk.readAsString(), 'keep');
       expect(await File('${outside.path}/new').exists(), false);
     },
+    skip: Platform.isWindows,
   );
 
   test(
@@ -313,6 +329,7 @@ void main() {
       expect(await script.exists(), false);
       expect(documents.current!.controller.text, 'later');
     },
+    skip: Platform.isWindows, // Windows 没有 POSIX 权限位/chmod 命令
   );
 
   test(

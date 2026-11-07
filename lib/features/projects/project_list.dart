@@ -2,6 +2,7 @@ import 'package:flit/l10n/strings.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../services/file_ops.dart';
+import '../../services/paths.dart';
 import '../../services/shell.dart';
 import '../workspace/project_session.dart' show ProjectKind;
 
@@ -106,7 +107,7 @@ class ProjectList extends ChangeNotifier {
       list.add(
         ProjectEntry(
           name: parts[0],
-          path: '$root/${parts[0]}',
+          path: joinPath(root, parts[0]),
           kind: kind,
           modified: seconds == null
               ? null

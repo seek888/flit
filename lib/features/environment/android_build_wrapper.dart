@@ -4,20 +4,23 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../../services/desktop_toolchain.dart';
 import '../../services/shell.dart';
 import '../terminal/run_sessions.dart';
+import 'android_component_probe.dart';
 import 'setup_runner.dart';
 import 'toolchain_catalog.dart';
 
-/// 精确的 SDK 包标识；version 是项目要求的版本，不是“可替代”的最新版。
-class AndroidComponent {
-  const AndroidComponent(this.id, [this.version = '']);
-  final String id;
-  final String version;
-  String get key => '$id:$version';
-  String get title =>
-      '${const {'platforms': 'Android Platform', 'build-tools': 'Build Tools', 'ndk': 'NDK', 'cmake': 'CMake / Ninja', 'platform-tools': 'Platform Tools', 'cmdline-tools': 'Command-line Tools'}[id] ?? id}${version.isEmpty ? '' : ' $version'}';
-}
+export 'android_component_probe.dart' show AndroidComponent;
+
+/// 组件检查的注入点：Android 侧是 bash 探测脚本的解析结果，桌面侧是纯 Dart
+/// 目录扫描（[AndroidComponentProbe]），测试可以整体替换。
+typedef AndroidComponentCheck =
+    Future<List<AndroidComponent>> Function(
+      List<AndroidComponent> components, {
+      bool baseline,
+      bool device,
+    });
 
 /// UI 只展示请求和返回选择；下载地址、版本匹配和重试不进入 Widget。
 class AndroidRepairRequest {
@@ -50,16 +53,29 @@ class AndroidBuildWrapper {
     ToolchainCatalog? catalog,
     Future<Map<dynamic, dynamic>> Function(String)? probe,
     Future<List<AndroidComponent>> Function()? requirements,
+    AndroidComponentCheck? check,
+    AndroidComponentProbe? componentProbe,
+    Future<void> Function(List<AndroidComponent>)? install,
   }) : catalog = catalog ?? ToolchainCatalog(),
        _probe =
            probe ??
            ((command) => Shell.instance.exec(command, timeoutMs: 60000)),
-       _requirements = requirements;
+       _requirements = requirements,
+       _checkOverride = check,
+       _componentProbe = componentProbe,
+       _installOverride = install;
 
   final RunSessions executions;
   final ToolchainCatalog catalog;
   final Future<Map<dynamic, dynamic>> Function(String) _probe;
   final Future<List<AndroidComponent>> Function()? _requirements;
+  final AndroidComponentCheck? _checkOverride;
+
+  /// 桌面端组件探测（默认 `DesktopToolchain().sdkDir` 的结构扫描）。
+  final AndroidComponentProbe? _componentProbe;
+
+  /// 桌面端组件补齐（默认走 D3 的 `DesktopToolchain.ensureComponents`）。
+  final Future<void> Function(List<AndroidComponent>)? _installOverride;
   int _generation = 0;
   bool _closed = false;
 
@@ -171,7 +187,47 @@ class AndroidBuildWrapper {
     return _unique(result);
   }
 
+  /// 组件检查的唯一入口：注入点 → 桌面纯 Dart 探测 → Android bash 协议。
+  /// 返回值已去重，并应用「已声明 Build Tools 版本就不补默认版本」的豁免。
   Future<List<AndroidComponent>> _check(
+    List<AndroidComponent> components, {
+    bool baseline = false,
+    bool device = false,
+  }) async {
+    final injected = _checkOverride;
+    final List<AndroidComponent> raw;
+    if (injected != null) {
+      raw = await injected(components, baseline: baseline, device: device);
+    } else if (isDesktopPlatform) {
+      raw = await (_componentProbe ?? AndroidComponentProbe()).check(
+        components,
+        baseline: baseline,
+        device: device,
+      );
+    } else {
+      raw = await _probeMissing(components, baseline: baseline, device: device);
+    }
+    final missing = _unique(raw);
+    // 已声明 Build Tools 时装该版本即可，它同时提供 AAPT2，无须再装默认版本。
+    if (baseline &&
+        components.any(
+          (c) =>
+              c.id == 'build-tools' && c.version != ToolchainCatalog.sdkVersion,
+        ) &&
+        !components.any(
+          (c) =>
+              c.id == 'build-tools' && c.version == ToolchainCatalog.sdkVersion,
+        )) {
+      missing.removeWhere(
+        (c) =>
+            c.id == 'build-tools' && c.version == ToolchainCatalog.sdkVersion,
+      );
+    }
+    return missing;
+  }
+
+  /// Android 侧继续走 bash 探测脚本（脚本与 termux 工具链绑定，桌面不可用）。
+  Future<List<AndroidComponent>> _probeMissing(
     List<AndroidComponent> components, {
     bool baseline = false,
     bool device = false,
@@ -191,7 +247,7 @@ class AndroidBuildWrapper {
         ),
       );
     }
-    final missing = _unique([
+    return [
       for (final line in (result['output'] as String? ?? '').split(
         RegExp(r'[\r\n]'),
       ))
@@ -200,23 +256,7 @@ class AndroidBuildWrapper {
             line.substring(11).split(':')[0],
             line.split(':').last,
           ),
-    ]);
-    // 已声明 Build Tools 时装该版本即可，它同时提供 AAPT2，无须再装默认版本。
-    if (baseline &&
-        components.any(
-          (c) =>
-              c.id == 'build-tools' && c.version != ToolchainCatalog.sdkVersion,
-        ) &&
-        !components.any(
-          (c) =>
-              c.id == 'build-tools' && c.version == ToolchainCatalog.sdkVersion,
-        )) {
-      missing.removeWhere(
-        (c) =>
-            c.id == 'build-tools' && c.version == ToolchainCatalog.sdkVersion,
-      );
-    }
-    return missing;
+    ];
   }
 
   Future<bool> _repair(
@@ -238,6 +278,16 @@ class AndroidBuildWrapper {
         );
       }
       return false;
+    }
+    // 桌面端不再拼 bash 脚本：组件补齐直接调 D3 的 sdkmanager/安装器，
+    // 进度/许可证/镜像都在该层内部处理。
+    if (isDesktopPlatform) {
+      return _repairDesktop(
+        missing,
+        confirm,
+        current,
+        afterFailure: afterFailure,
+      );
     }
     final commands = <String>[];
     final requested = [...missing];
@@ -317,6 +367,67 @@ class AndroidBuildWrapper {
     }
   }
 
+  /// 桌面端补齐：确认后用 sdkmanager 安装（D3 的 DesktopToolchain.ensureComponents），
+  /// 再按同一探测复查，防止安装器报成功但目录不完整。
+  Future<bool> _repairDesktop(
+    List<AndroidComponent> missing,
+    ConfirmAndroidRepair confirm,
+    bool Function() current, {
+    required bool afterFailure,
+  }) async {
+    final requested = _unique(missing);
+    if (!current() ||
+        !await confirm(
+          AndroidRepairRequest(requested, afterFailure: afterFailure),
+        ) ||
+        !current()) {
+      return false;
+    }
+    if (installing || executions.active != null || executions.starting) {
+      throw StateError(strings.aTaskIsRunningStopItAnd);
+    }
+    installing = true;
+    try {
+      final install = _installOverride ?? _installDesktopComponents;
+      await install(requested);
+      if (!current()) return false;
+      final remaining = await _check(requested);
+      if (remaining.isNotEmpty) {
+        throw StateError(
+          strings.stillUnavailableAfterInstallationP(
+            remaining.map((c) => c.title).join('、'),
+          ),
+        );
+      }
+      return current();
+    } catch (error) {
+      if (current()) {
+        await confirm(
+          AndroidRepairRequest(
+            requested,
+            afterFailure: afterFailure,
+            error: '${error is StateError ? error.message : error}',
+          ),
+        );
+      }
+      return false;
+    } finally {
+      installing = false;
+    }
+  }
+
+  /// 桌面端安装通道：D3 的 `ensureComponents` 自动补 cmdline-tools、接受许可证，
+  /// 并按组件映射成 `platforms;android-36` 这类 sdkmanager 包名。
+  Future<void> _installDesktopComponents(
+    List<AndroidComponent> components,
+  ) async {
+    final toolchain = DesktopToolchain();
+    await toolchain.ensureComponents([
+      for (final c in components) (id: c.id, version: c.version),
+    ]);
+  }
+
+  /// Android 侧补装命令（catalog + bash 安装脚本）；桌面端不使用这个方法。
   Future<String> _installCommand(AndroidComponent component) async {
     final version = component.version;
     final tag = switch (component.id) {
@@ -471,8 +582,10 @@ class AndroidBuildDiagnostics {
     ).hasMatch(line)) {
       for (final id in ['build-tools', 'ndk', 'cmake']) {
         final match = RegExp(
-          '/$id/'
-          r'''(\d+\.\d+\.\d+)/(?:[^\r\n"']*/)?(?:aapt2?|aidl|zipalign|clang(?:\+\+)?|cmake|ninja)(?:["'\s]|$)''',
+          // Windows 的 SDK 路径是 `C:\sdk\build-tools\35.0.0\aapt2.exe`，
+          // 不能只认 `/`：版本前后、中间目录、可执行后缀都允许两种分隔符。
+          '[/\\\\]$id[/\\\\]'
+          r'''(\d+\.\d+\.\d+)[/\\](?:[^\r\n"']*[/\\])?(?:aapt2?|aidl|zipalign|clang(?:\+\+)?|cmake|ninja)(?:\.exe|\.bat)?(?:["'\s]|$)''',
         ).firstMatch(line);
         if (match != null) _record(id, match[1]!);
       }

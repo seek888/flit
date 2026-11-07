@@ -1,12 +1,24 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flit/services/git_process.dart';
 import 'package:flit/services/git_repo.dart';
 
-Future<GitResult> localGit(String command) async {
+/// 测试用的真实执行器：argv 直启 git，跟 [GitProcess] 一样带输出稳定化参数。
+/// 注入 GitRepo 时绕过 GitProcess 的可执行文件解析（CI 上 git 在 PATH 里）。
+Future<GitResult> localGit(List<String> args) async {
   final result = await Process.run(
-    'bash',
-    ['-c', command],
-    environment: {'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'},
+    'git',
+    [...GitProcess.globalArgs, ...args],
+    stdoutEncoding: const Utf8Codec(allowMalformed: true),
+    stderrEncoding: const Utf8Codec(allowMalformed: true),
+    environment: {
+      'GIT_CONFIG_NOSYSTEM': '1',
+      // 指向不存在的文件 = 空全局配置，不读用户的 ~/.gitconfig
+      'GIT_CONFIG_GLOBAL':
+          '${Directory.systemTemp.path}/flit-test-no-gitconfig',
+      'GIT_TERMINAL_PROMPT': '0',
+    },
   );
   return (code: result.exitCode, out: '${result.stdout}${result.stderr}');
 }
@@ -119,9 +131,13 @@ void main() {
       final nested = GitRepo('${temp.path}/app', execute: localGit);
       await expectLater(nested.snapshot(), throwsStateError);
       expect(nested.supported, false);
-      expect(parent.command(['push']), contains('GIT_TERMINAL_PROMPT=0'));
-      expect(parent.command(['push']), contains('BatchMode=yes'));
-      expect(parent.command(['push']), contains('StrictHostKeyChecking=yes'));
+      // Android 端仍把 argv 渲染成 POSIX 命令串（仅 Android 使用）；
+      // 桌面端这道执行路径不存在，参数走 Process.run argv。
+      final android = GitRepo.androidCommand(parent.root, ['push']);
+      expect(android, contains('GIT_TERMINAL_PROMPT=0'));
+      expect(android, contains('BatchMode=yes'));
+      expect(android, contains('StrictHostKeyChecking=yes'));
+      expect(android, contains("'push'"));
     } finally {
       await temp.delete(recursive: true);
     }

@@ -76,6 +76,98 @@ void main() {
     expect(cmd, contains('--description'));
   });
 
+  group('桌面端 create 参数化', () {
+    test('flutter create 参数数组（不含 shell 包装）', () {
+      expect(flutterCreateArgs(base), [
+        'create',
+        '--no-pub',
+        '--platforms=android',
+        '--org',
+        'com.example',
+        'my_app',
+      ]);
+      final command = buildDesktopCreateCommand(base);
+      expect(
+        command,
+        'flutter create --no-pub --platforms=android '
+        '--org com.example my_app',
+      );
+      expect(command, isNot(contains('mkdir -p')));
+      expect(command, isNot(contains('cd ')));
+      expect(command, isNot(contains('bash')));
+    });
+
+    test('多平台 + empty + java + 中文/空格描述都进 argv 并被正确引用', () {
+      final params = const CreateProjectParams(
+        type: 'flutter',
+        name: 'demo',
+        org: 'com.a.b',
+        platforms: ['android', 'ios'],
+        empty: true,
+        androidLang: 'java',
+        description: "it's fine",
+        projectRoot: '/home/projects',
+      );
+      expect(flutterCreateArgs(params), [
+        'create',
+        '--no-pub',
+        '--platforms=android,ios',
+        '--org',
+        'com.a.b',
+        '--empty',
+        '-a',
+        'java',
+        '--description',
+        "it's fine",
+        'demo',
+      ]);
+      expect(
+        buildDesktopCreateCommand(params),
+        'flutter create --no-pub --platforms=android,ios --org com.a.b '
+        '--empty -a java --description "it\'s fine" demo',
+      );
+    });
+
+    test('dart create 参数数组', () {
+      const params = CreateProjectParams(
+        type: 'dart',
+        name: 'private_app',
+        org: 'com.example',
+        platforms: [],
+        empty: false,
+        androidLang: 'kotlin',
+        description: '',
+        projectRoot: '/home/projects',
+      );
+      expect(dartCreateArgs(params), [
+        'create',
+        '--no-pub',
+        '--template',
+        'console',
+        'private_app',
+      ]);
+      expect(
+        buildDesktopCreateCommand(params),
+        'dart create --no-pub --template console private_app',
+      );
+    });
+
+    test('Windows 路径里含空格/& 的工程名会被 cmd 引号保护', () {
+      const params = CreateProjectParams(
+        type: 'flutter',
+        name: 'my_app',
+        org: 'com.example',
+        platforms: ['windows'],
+        empty: false,
+        androidLang: 'kotlin',
+        description: 'a & b',
+        projectRoot: r'C:\Users\me\My Projects',
+      );
+      final command = buildDesktopCreateCommand(params);
+      expect(command, contains('--description "a & b"'));
+    });
+  });
+
   group('buildGitCloneCommand', () {
     test('默认克隆', () {
       final cmd = buildGitCloneCommand(

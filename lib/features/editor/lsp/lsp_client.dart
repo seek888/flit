@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flit_lsp/flit_lsp.dart';
+import '../../../services/paths.dart';
 import 'protocol.dart';
 
 enum LanguageServiceState { stopped, starting, ready, unavailable }
@@ -85,7 +86,7 @@ class LspClient {
         'workspaceFolders': [
           {
             'uri': LspProtocol.fileUri(projectPath),
-            'name': projectPath.split('/').last,
+            'name': baseName(projectPath),
           },
         ],
         'capabilities': {
@@ -225,10 +226,16 @@ class LspClient {
   }
 
   bool acceptsDiagnostics(DiagnosticsReport report, String text) {
-    final doc = _documents[report.path];
-    return doc != null &&
-        doc.text == text &&
-        (report.version == null || report.version == doc.version);
+    // 语言服务回的路径来自 Uri.toFilePath()（Windows 是 `C:\a\b`），
+    // 编辑器里的路径是 joinPath 拼的绝对路径；不能直接按字符串 key 查，
+    // 否则混合分隔符/大小写会让诊断永远被丢弃。
+    for (final entry in _documents.entries) {
+      if (!samePath(entry.key, report.path)) continue;
+      final doc = entry.value;
+      return doc.text == text &&
+          (report.version == null || report.version == doc.version);
+    }
+    return false;
   }
 
   Future<List<LspCompletionItem>> completion(

@@ -2,7 +2,11 @@ import 'dart:io';
 
 import 'package:flit_env/flit_env.dart';
 
+import '../core/host_platform.dart';
 import 'desktop_shell.dart';
+
+export '../core/host_platform.dart'
+    show HostPlatform, hostPlatform, isDesktopPlatform, setHostPlatform;
 
 /// shell 单引号转义(拼终端命令用)
 String shQuote(String s) => "'${s.replaceAll("'", r"'\''")}'";
@@ -11,12 +15,9 @@ String shQuote(String s) => "'${s.replaceAll("'", r"'\''")}'";
 /// Android: PTY bash 的环境在启动那一刻冻结，命令自带 source 才能拿到最新 PATH。
 /// 桌面: 环境由子进程注入，不需要 source。
 String get terminalEnvSource {
-  if (!Platform.isAndroid) return '';
+  if (hostPlatform != HostPlatform.android) return '';
   return r'if [ -f "$HOME/.flit/env.sh" ]; then . "$HOME/.flit/env.sh" || exit $?; fi; ';
 }
-
-/// 桌面端标志：Windows/Linux/macOS 走 DesktopShell，不再碰 Android 原生插件。
-bool get isDesktopPlatform => !Platform.isAndroid;
 
 /// 进程边界门面：Android 侧是 flit_env 原生薄方法，桌面侧是本地进程 + 隔离环境。
 class Shell {

@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import '../../services/paths.dart';
 import '../../services/shell.dart';
 
 /// 文件在编辑器里的打开方式: 代码(文本编辑器) / 图片(预览卡) / 二进制(文件卡)。
@@ -27,7 +30,7 @@ const _textExtensions = {
 };
 
 String _extensionOf(String path) {
-  final name = path.split('/').last;
+  final name = baseName(path);
   final dot = name.lastIndexOf('.');
   return dot < 0 ? '' : name.substring(dot + 1).toLowerCase();
 }
@@ -41,7 +44,30 @@ FileKind? fileKindByName(String path) {
   return null;
 }
 
-/// 嗅探: 前 8KB 出现 NUL 字节即二进制。输出一行 binary 或 text。
+/// 嗅探(纯 Dart, 桌面端唯一实现): 读前 8KB, 出现 NUL 字节即二进制。
+///
+/// 读不出/空文件按文本处理（编辑器自己会报读不出，别把可编辑文件拒之门外）。
+/// Android 仍可用下面的 shell 版；桌面端 cmd 没有 head/od/grep。
+FileKind sniffFile(String absolutePath, {int sampleBytes = 8192}) {
+  try {
+    final file = File(absolutePath);
+    if (!file.existsSync()) return FileKind.code;
+    final length = file.lengthSync();
+    if (length == 0) return FileKind.code;
+    final raf = file.openSync();
+    final List<int> bytes;
+    try {
+      bytes = raf.readSync(length < sampleBytes ? length : sampleBytes);
+    } finally {
+      raf.closeSync();
+    }
+    return bytes.contains(0) ? FileKind.binary : FileKind.code;
+  } catch (_) {
+    return FileKind.code;
+  }
+}
+
+/// 嗅探(Android shell 版, 保留兼容): 前 8KB 出现 NUL 字节即二进制。
 /// od 把 NUL 打成 \0, grep 按定长串找(正则里 \0 是非法回引)
 String sniffCommand(String absolutePath) =>
     'head -c 8192 -- ${shQuote(absolutePath)} | od -An -c '

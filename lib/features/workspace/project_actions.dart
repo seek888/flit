@@ -1,53 +1,105 @@
 import 'package:flit/l10n/strings.dart';
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
 import '../../services/adb_ops.dart';
+import '../../services/paths.dart';
 import '../../services/shell.dart';
 import '../run/web_runner.dart';
 import '../environment/android_build_wrapper.dart';
 import '../terminal/run_sessions.dart';
 import 'project_documents.dart';
 
+/// 构建命令的唯一拼装点（纯函数，平台分支显式可见、可单测）。
+///
+/// 桌面端直接执行 flutter（cmd.exe / PTY 能解析 flutter.bat，环境由
+/// `DesktopToolchain.childEnvironment` 注入）；Android 端必须先 source 工具链
+/// 环境脚本（termux 的 PATH 在 PTY 启动时冻结），保留既有行为。
+String buildApkCommand({required bool release, required bool desktop}) {
+  final mode = release ? '--release' : '--debug';
+  final build = 'flutter build apk $mode --target-platform android-arm64 2>&1';
+  if (desktop) return build;
+  return 'bash "\$HOME/.flit/scripts/android_build.sh" $build';
+}
+
+/// Web 构建命令：两平台同构（flutter build web 自带 pub get，不需要 JDK/Android SDK）。
+const String buildWebCommand = 'flutter build web --release 2>&1';
+
+/// 设备运行命令：桌面端没有 bash 前置脚本。
+String flutterRunCommand(String target, {required bool desktop}) {
+  if (desktop) return 'flutter run -d "$target" 2>&1';
+  return 'bash "\$HOME/.flit/scripts/android_build.sh" '
+      'flutter run -d ${shQuote(target)} 2>&1';
+}
+
+/// `dart compile exe` 命令：输出目录 build/ 由 Dart 侧先建好，不再 `mkdir -p`。
+///
+/// 工程名可能含空格/中文：桌面用 cmd 与 sh 都认的双引号，Android 保持 POSIX 单引号。
+String dartExeCommand(String projectPath, {required bool desktop}) {
+  final name = baseName(projectPath);
+  final quote = desktop ? (String value) => '"$value"' : shQuote;
+  return 'dart compile exe ${quote('bin/$name.dart')} '
+      '-o ${quote('build/$name')} 2>&1';
+}
+
+/// `dart compile exe` 任务 id（[ProjectActions._prepare] 据此预建输出目录）。
+const String dartExeConfigurationId = 'build-dart-exe';
+
 enum ProjectBuild {
   debugApk(
-    RunConfiguration(
-      id: 'build-apk',
-      title: 'APK Debug',
-      command:
-          'bash "\$HOME/.flit/scripts/android_build.sh" flutter build apk --debug --target-platform android-arm64 2>&1',
-      artifactPath: 'build/app/outputs/flutter-apk/app-debug.apk',
-    ),
+    id: 'build-apk',
+    artifactPath: 'build/app/outputs/flutter-apk/app-debug.apk',
+    release: false,
   ),
   releaseApk(
-    RunConfiguration(
-      id: 'build-apk-release',
-      title: 'APK Release',
-      command:
-          'bash "\$HOME/.flit/scripts/android_build.sh" flutter build apk --release --target-platform android-arm64 2>&1',
-      artifactPath: 'build/app/outputs/flutter-apk/app-release.apk',
-    ),
+    id: 'build-apk-release',
+    artifactPath: 'build/app/outputs/flutter-apk/app-release.apk',
+    release: true,
   ),
-  web(
-    RunConfiguration(
-      id: 'build-web',
-      title: 'Web Release',
-      command: 'flutter build web --release 2>&1',
-    ),
-  );
+  web(id: 'build-web', artifactPath: null, release: false);
 
-  const ProjectBuild(this._configuration);
-  final RunConfiguration _configuration;
+  const ProjectBuild({
+    required this.id,
+    required this.artifactPath,
+    required this.release,
+  });
+
+  final String id;
+
+  /// 构建产物的相对路径；Web 的产物是目录（见 [resolvedArtifactPath]）。
+  final String? artifactPath;
+
+  /// APK 是否 release 变体。
+  final bool release;
+
+  String get title => switch (this) {
+    debugApk => strings.buildApkDebug,
+    releaseApk => strings.buildApkRelease,
+    web => strings.buildWebRelease,
+  };
+
+  String get command => switch (this) {
+    debugApk ||
+    releaseApk => buildApkCommand(release: release, desktop: isDesktopPlatform),
+    web => buildWebCommand,
+  };
+
+  /// 传给 `builtArtifacts`/文件卡的入口路径。
+  ///
+  /// Web 产物是目录：桌面端文件卡能识别目录（文件数/总大小/导出/打开文件夹），
+  /// Android 端没有目录文件卡，用 `index.html` 作为入口最稳。
+  String? get resolvedArtifactPath => switch (this) {
+    web => isDesktopPlatform ? 'build/web' : 'build/web/index.html',
+    _ => artifactPath,
+  };
+
   RunConfiguration get configuration => RunConfiguration(
-    id: _configuration.id,
-    title: switch (this) {
-      debugApk => strings.buildApkDebug,
-      releaseApk => strings.buildApkRelease,
-      web => strings.buildWebRelease,
-    },
-    command: _configuration.command,
-    artifactPath: _configuration.artifactPath,
+    id: id,
+    title: title,
+    command: command,
+    artifactPath: resolvedArtifactPath,
     flutterLogs: true,
   );
 }
@@ -112,8 +164,10 @@ class ProjectActions extends ChangeNotifier {
     Future<List<AdbDevice>> Function()? devices,
     bool Function()? gitBusy,
     this.android,
+    Future<void> Function(String projectPath)? prepareWeb,
   }) : _devices = devices ?? AdbOps.devices,
-       _gitBusy = gitBusy ?? _notBusy {
+       _gitBusy = gitBusy ?? _notBusy,
+       _prepareWeb = prepareWeb ?? _prepareWebDefault {
     starting.addListener(notifyListeners);
   }
 
@@ -126,6 +180,9 @@ class ProjectActions extends ChangeNotifier {
   final AndroidBuildWrapper? android;
   final Future<List<AdbDevice>> Function() _devices;
   final bool Function() _gitBusy;
+
+  /// Web 构建前补建 `web/` 平台目录的注入点（测试不 spawn 真实 flutter）。
+  final Future<void> Function(String projectPath) _prepareWeb;
 
   /// Identifier of the action currently preparing a managed session. This
   /// covers the short device lookup/save window before RunSessions has a tab.
@@ -190,11 +247,27 @@ class ProjectActions extends ChangeNotifier {
     }
   }
 
+  /// 构建前置（纯 Dart 判断 + 进程参数，不拼 POSIX 管道）：
+  /// - Web：工程缺 `web/index.html` 时先 `flutter create --platforms=web .`，
+  ///   否则 `flutter build web` 会直接报 "not configured to build on the web"；
+  /// - `dart compile exe`：先建 build/ 输出目录，代替 `mkdir -p`。
+  Future<void> _prepare(RunConfiguration configuration) async {
+    if (configuration.id == ProjectBuild.web.id) {
+      await _prepareWeb(path);
+      _ensureOpen();
+      return;
+    }
+    if (configuration.id == dartExeConfigurationId) {
+      await Directory(joinPath(path, 'build')).create(recursive: true);
+    }
+  }
+
   Future<RunSession> _start(
     RunConfiguration configuration,
     void Function(String)? onText,
   ) async {
     await _save();
+    await _prepare(configuration);
     final session = await executions.start(configuration, onText: onText);
     final artifact = configuration.artifactPath;
     if (artifact != null) {
@@ -229,8 +302,7 @@ class ProjectActions extends ChangeNotifier {
       final configuration = RunConfiguration(
         id: 'run:$target',
         title: device.$2.isEmpty ? target : device.$2,
-        command:
-            'bash "\$HOME/.flit/scripts/android_build.sh" flutter run -d ${shQuote(target)} 2>&1',
+        command: flutterRunCommand(target, desktop: isDesktopPlatform),
         kind: SessionKind.run,
         hotReload: true,
         target: target,
@@ -263,16 +335,11 @@ class ProjectActions extends ChangeNotifier {
 
   /// 纯 Dart 工程的构建 = dart compile exe(原生可执行)。
   /// console 模板入口固定为 bin/<包名>.dart, 包名 = 工程目录名; 产物放 build/。
-  RunConfiguration get dartExeConfiguration {
-    final name = path.split('/').last;
-    return RunConfiguration(
-      id: 'build-dart-exe',
-      title: strings.compileExecutable,
-      command:
-          'mkdir -p build && dart compile exe ${shQuote('bin/$name.dart')} '
-          '-o ${shQuote('build/$name')} 2>&1',
-    );
-  }
+  RunConfiguration get dartExeConfiguration => RunConfiguration(
+    id: dartExeConfigurationId,
+    title: strings.compileExecutable,
+    command: dartExeCommand(path, desktop: isDesktopPlatform),
+  );
 
   Future<RunSession> buildDartExe() => start(dartExeConfiguration);
 
@@ -306,6 +373,8 @@ class ProjectActions extends ChangeNotifier {
     ProjectBuild kind, {
     ConfirmAndroidRepair? confirmRepair,
   }) {
+    // 桌面端 `android == null`（D1 在 project_session 里按平台置空）：
+    // 直接启动构建会话，不再过 AndroidBuildWrapper 的 bash 前置检查。
     if (kind == ProjectBuild.web || android == null || confirmRepair == null) {
       return start(kind.configuration);
     }
@@ -336,4 +405,9 @@ class ProjectActions extends ChangeNotifier {
     _artifacts.close();
     super.dispose();
   }
+}
+
+/// 默认的 Web 引导实现：与 Web 预览共用 [ensureWebPlatform]（同一套 Dart 判断）。
+Future<void> _prepareWebDefault(String projectPath) async {
+  await ensureWebPlatform(projectPath);
 }

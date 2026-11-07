@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme.dart';
+import '../../services/paths.dart';
 import 'controller/code_controller.dart';
 import 'file_kind.dart';
 import 'widgets/editor_dock_toolbar.dart';
@@ -175,7 +176,7 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
   }
 
   String? _currentPath() =>
-      _current == null ? null : '${widget.projectPath}/${_current!.path}';
+      _current == null ? null : joinPath(widget.projectPath, _current!.path);
 
   // ---------- 文件 ----------
 

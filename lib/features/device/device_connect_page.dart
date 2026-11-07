@@ -15,6 +15,7 @@ import '../terminal/console_session.dart';
 import '../terminal/terminal_host.dart';
 import 'device_connection.dart';
 import 'device_usb_guide.dart';
+import '../../core/host_platform.dart';
 import 'device_pairing_guide_page.dart';
 
 /// 状态 + 两种激活方式，详细步骤按需打开。无线配对服务独立于页面生命周期；
@@ -106,7 +107,8 @@ class _DeviceConnectPageState extends State<DeviceConnectPage>
   Future<void> _initialize() async {
     await _connection.refresh();
     if (!mounted) return;
-    final paired = await _readPairingStatus();
+    // 桌面端没有 FlitDevice 的「通知式配对」通道，读状态只会报错；跳过。
+    final paired = isDesktopPlatform ? false : await _readPairingStatus();
     if (mounted &&
         !paired &&
         widget.autoConnectOnOpen &&
@@ -183,7 +185,7 @@ class _DeviceConnectPageState extends State<DeviceConnectPage>
     _foreground = state == AppLifecycleState.resumed;
     if (_foreground) {
       unawaited(_connection.refresh());
-      unawaited(_readPairingStatus());
+      if (!isDesktopPlatform) unawaited(_readPairingStatus());
     } else {
       _poll?.cancel();
     }
@@ -349,8 +351,12 @@ class _DeviceConnectPageState extends State<DeviceConnectPage>
           ],
           const SizedBox(height: 12),
           _usbCard(),
-          const SizedBox(height: 12),
-          _wirelessCard(),
+          // 桌面端没有 FlitDevice 的 mDNS 发现与通知式配对：整块隐藏，
+          // 只保留 USB / 手动 adb connect（含手动 adb pair）。
+          if (!isDesktopPlatform) ...[
+            const SizedBox(height: 12),
+            _wirelessCard(),
+          ],
           const SizedBox(height: 12),
           SurfaceCard(
             padding: EdgeInsets.zero,
@@ -453,7 +459,9 @@ class _DeviceConnectPageState extends State<DeviceConnectPage>
                                 Align(
                                   alignment: Alignment.centerLeft,
                                   child: Text(
-                                    context.strings.keepTheSystemPairingDialogOpenIn,
+                                    context
+                                        .strings
+                                        .keepTheSystemPairingDialogOpenIn,
                                     style: TextStyle(
                                       fontSize: 12,
                                       color: AppColors.textSecondary,
@@ -515,20 +523,21 @@ class _DeviceConnectPageState extends State<DeviceConnectPage>
             ),
           ),
           const SizedBox(height: 8),
-          ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-            leading: const Icon(Icons.help_outline, size: 20),
-            title: Text(
-              context.strings.wirelessPairingGuide,
-              style: TextStyle(fontSize: 13),
+          if (!isDesktopPlatform)
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+              leading: const Icon(Icons.help_outline, size: 20),
+              title: Text(
+                context.strings.wirelessPairingGuide,
+                style: TextStyle(fontSize: 13),
+              ),
+              subtitle: Text(
+                context.strings.notificationStylePairingStepsAndTroubleshooting,
+                style: TextStyle(fontSize: 12),
+              ),
+              trailing: const Icon(Icons.chevron_right, size: 20),
+              onTap: _showPairingGuide,
             ),
-            subtitle: Text(
-              context.strings.notificationStylePairingStepsAndTroubleshooting,
-              style: TextStyle(fontSize: 12),
-            ),
-            trailing: const Icon(Icons.chevron_right, size: 20),
-            onTap: _showPairingGuide,
-          ),
         ],
       ),
     ),

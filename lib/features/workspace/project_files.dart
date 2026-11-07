@@ -1,7 +1,11 @@
 import 'package:flit/l10n/strings.dart';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 
 import '../../services/file_ops.dart';
+import '../../services/local_fs.dart';
+import '../../services/paths.dart';
 import '../../services/shell.dart';
 import '../editor/file_kind.dart';
 import 'project_documents.dart';
@@ -23,19 +27,27 @@ class ProjectFiles extends ChangeNotifier {
 
   Future<void> refresh() async {
     final request = ++_refreshRequest;
-    final res = await Shell.instance.exec(
-      "set -o pipefail; cd ${shQuote(root)} && find . -mindepth 1 "
-      r"\( -name .dart_tool -o -name build -o -name .git \) -prune -o "
-      r"\( -type d -printf '%P/\n' -o -type f -printf '%P\n' \) | sort",
-    );
-    if (request != _refreshRequest) return;
-    if (res['exitCode'] != 0) {
-      throw StateError(
-        strings.unableToReadProjectDirectoryP(res['output'] ?? ''),
+    final List<String> listing;
+    if (isDesktopPlatform) {
+      // 桌面端不需要 find -printf: LocalFs 直接遍历（语义与 shim 一致）。
+      listing = LocalFs.instance.listTree(root);
+    } else {
+      final res = await Shell.instance.exec(
+        "set -o pipefail; cd ${shQuote(root)} && find . -mindepth 1 "
+        r"\( -name .dart_tool -o -name build -o -name .git \) -prune -o "
+        r"\( -type d -printf '%P/\n' -o -type f -printf '%P\n' \) | sort",
       );
+      if (request != _refreshRequest) return;
+      if (res['exitCode'] != 0) {
+        throw StateError(
+          strings.unableToReadProjectDirectoryP(res['output'] ?? ''),
+        );
+      }
+      final out = (res['output'] as String? ?? '').trim();
+      listing = out.split('\n').where((l) => l.isNotEmpty).toList();
     }
-    final out = (res['output'] as String? ?? '').trim();
-    _files = List.unmodifiable(out.split('\n').where((l) => l.isNotEmpty));
+    if (request != _refreshRequest) return;
+    _files = List.unmodifiable(listing);
     notifyListeners();
   }
 
@@ -45,7 +57,14 @@ class ProjectFiles extends ChangeNotifier {
     final byName = fileKindByName(rel);
     if (byName != null) return byName;
     try {
-      final res = await Shell.instance.exec(sniffCommand('$root/$rel'));
+      final absolute = joinPath(root, rel);
+      if (isDesktopPlatform) {
+        // 目录（如 Web 构建产物 build/web/）没有后缀也读不了文本：
+        // 按文件卡展示，交给 FileCard 决定"打开文件夹/导出"。
+        if (Directory(absolute).existsSync()) return FileKind.binary;
+        return sniffFile(absolute);
+      }
+      final res = await Shell.instance.exec(sniffCommand(absolute));
       return fileKindFromSniff(res['output'] as String? ?? '');
     } catch (_) {
       return FileKind.code;
@@ -53,10 +72,11 @@ class ProjectFiles extends ChangeNotifier {
   }
 
   String _relative(String path) {
-    if (!path.startsWith('$root/')) {
+    final relative = relativeInside(root, path);
+    if (relative == null) {
       throw StateError(strings.fileIsOutsideTheCurrentProject);
     }
-    return path.substring(root.length + 1);
+    return relative;
   }
 
   Future<void> _checked(Future<OpResult> operation) async {
@@ -66,7 +86,7 @@ class ProjectFiles extends ChangeNotifier {
 
   Future<void> rename(String path, String name) => documents.renamePath(
     _relative(path),
-    _relative('${path.substring(0, path.lastIndexOf('/'))}/$name'),
+    _relative(joinPath(dirName(path), name)),
     apply: () => _checked(_ops.rename(path, name, allowedRoot: root)),
   );
 
@@ -92,7 +112,7 @@ class ProjectFiles extends ChangeNotifier {
       if (_ops.clipRoot != root) {
         throw StateError(strings.filesCanOnlyBeMovedWithinThe);
       }
-      final destination = '$target/${source.split('/').last}';
+      final destination = joinPath(target, baseName(source));
       await documents.renamePath(
         _relative(source),
         _relative(destination),

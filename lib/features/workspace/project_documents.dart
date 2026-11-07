@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../../services/local_fs.dart';
+import '../../services/paths.dart';
 import '../../services/shell.dart';
 import '../editor/controller/code_controller.dart';
 import '../editor/highlighting/highlighter.dart';
@@ -81,7 +82,7 @@ class ProjectDocuments extends ChangeNotifier {
     var removed = false;
     try {
       await _saving;
-      final text = await _read('$projectPath/$path');
+      final text = await _read(_absolutePath(path));
       if (text == null) {
         _documents.remove(path);
         if (identical(current, doc)) current = null;
@@ -165,13 +166,12 @@ class ProjectDocuments extends ChangeNotifier {
     return result['exitCode'] == 0;
   }
 
+  /// 工程内相对路径的绝对位置（统一用宿主分隔符）。
+  String _absolutePath(String relative) => joinPath(projectPath, relative);
+
   String? _relativePath(String absolutePath) {
-    final root = projectPath.endsWith('/')
-        ? projectPath.substring(0, projectPath.length - 1)
-        : projectPath;
-    if (!absolutePath.startsWith('$root/')) return null;
-    final relative = absolutePath.substring(root.length + 1);
-    if (!_validRelativePath(relative)) return null;
+    final relative = relativeInside(projectPath, absolutePath);
+    if (relative == null || !_validRelativePath(relative)) return null;
     return relative;
   }
 
@@ -315,7 +315,7 @@ class ProjectDocuments extends ChangeNotifier {
     final sequence = ++_openSequence;
     var document = _documents[path];
     if (document == null || !document.dirty) {
-      final text = await _read('$projectPath/$path');
+      final text = await _read(_absolutePath(path));
       if (text == null) throw StateError(strings.fileDoesNotExistP(path));
       if (_closed || sequence != _openSequence) return false;
       if (document == null) {
@@ -387,7 +387,7 @@ class ProjectDocuments extends ChangeNotifier {
         notifyListeners();
         var saved = false;
         try {
-          saved = await _write('$projectPath/${doc.path}', text);
+          saved = await _write(_absolutePath(doc.path), text);
         } catch (_) {
           saved = false;
         } finally {
@@ -417,7 +417,7 @@ class ProjectDocuments extends ChangeNotifier {
         for (final doc in _documents.values.toList()) {
           String? text;
           try {
-            text = await _read('$projectPath/${doc.path}');
+            text = await _read(_absolutePath(doc.path));
           } catch (_) {
             readError = strings.unableToReloadPTheFileWas(doc.path);
             // A saved buffer that cannot be reread must not overwrite the disk.

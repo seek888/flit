@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flit/l10n/strings.dart';
 
 import 'local_fs.dart';
+import 'paths.dart';
 import 'shell.dart';
 
 /// File operation result.
@@ -20,8 +21,12 @@ class FileOps {
   bool clipCut = false;
   bool get hasClip => clipPath != null;
   String? clipRoot;
-  String? get clipName =>
-      clipPath?.split('/').where((part) => part.isNotEmpty).lastOrNull;
+  String? get clipName {
+    final path = clipPath;
+    if (path == null) return null;
+    final name = baseName(path);
+    return name.isEmpty ? null : name;
+  }
 
   void clearClip() {
     clipPath = null;
@@ -228,14 +233,13 @@ class FileOps {
 
   // ---------- 桌面端实现（无 bash，直接用 Dart 文件 API） ----------
 
-  static final String _sep = Platform.pathSeparator;
-
-  String _deskJoin(String parent, String name) =>
-      parent.endsWith(_sep) ? '$parent$name' : '$parent$_sep$name';
+  // 路径里可能混用 '/' 与 '\'（工程根与相对路径来自不同拼接点），
+  // 只按 Platform.pathSeparator 找父目录会找错；统一走 paths.dart。
+  String _deskJoin(String parent, String name) => joinPath(parent, name);
 
   String _deskParent(String path) {
-    final i = path.lastIndexOf(_sep);
-    return i <= 0 ? path : path.substring(0, i);
+    final parent = dirName(path);
+    return parent.isEmpty ? path : parent;
   }
 
   Future<OpResult> _desktopTransfer(
@@ -256,7 +260,8 @@ class FileOps {
     if (move && !fs.isInside(fromRoot, src)) {
       return fail(strings.filesCannotBeMovedOutsideTheirProject);
     }
-    if (!fs.isInside(destinationRoot, destDir) ||
+    // 目标目录允许就是工程根(往根里粘贴), 但目标条目必须在根内。
+    if (!_desktopWithin(fs, destinationRoot, destDir) ||
         !fs.isInside(destinationRoot, target)) {
       return fail(strings.destinationMustBeInsideTheCurrentProject);
     }
@@ -275,6 +280,11 @@ class FileOps {
       return fail('$e');
     }
   }
+
+  /// parent/destDir 可以是根自身；和 [_desktopDelete] 的"条目必须严格在根内"
+  /// 区分开（删除/改名根目录必须被拒绝）。
+  bool _desktopWithin(LocalFs fs, String root, String path) =>
+      fs.same(root, path) || fs.isInside(root, path);
 
   Future<OpResult> _desktopDelete(String path, String allowedRoot) async {
     final fs = LocalFs.instance;
@@ -318,7 +328,8 @@ class FileOps {
   }) async {
     final fs = LocalFs.instance;
     final target = _deskJoin(parent, name);
-    if (!fs.isInside(allowedRoot, parent) ||
+    // 新建项可以落在工程根下(parent == allowedRoot)。
+    if (!_desktopWithin(fs, allowedRoot, parent) ||
         !fs.isInside(allowedRoot, target)) {
       return fail(strings.filesAndDirectoriesCanOnlyBeCreated);
     }

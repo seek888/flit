@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'paths.dart';
+
 /// 跨平台文件操作：替代原先依赖 POSIX shell（find -printf / realpath / base64）的实现。
 ///
 /// Android 侧仍可复用（语义一致），桌面端是唯一实现路径。
@@ -64,9 +66,13 @@ class LocalFs {
   }
 
   /// 原子写：先写临时文件再改名，避免半截文件。
+  ///
+  /// POSIX 桌面端保留原文件权限位（可执行脚本保存后仍是 0755；Android 侧的
+  /// chmod --reference 语义在桌面不能被悄悄丢掉）。
   void writeText(String path, String content) {
     final target = File(path);
     target.parent.createSync(recursive: true);
+    final mode = _modeOf(target);
     final tmp = File('$path.tmp-${DateTime.now().microsecondsSinceEpoch}');
     tmp.writeAsStringSync(content);
     try {
@@ -76,6 +82,22 @@ class LocalFs {
       if (target.existsSync()) target.deleteSync();
       tmp.renameSync(path);
     }
+    if (mode != null) _restoreMode(path, mode);
+  }
+
+  int? _modeOf(File file) {
+    if (Platform.isWindows) return null; // Windows 没有 POSIX 权限位
+    try {
+      return file.existsSync() ? file.statSync().mode & 0x1ff : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _restoreMode(String path, int mode) {
+    try {
+      Process.runSync('chmod', [mode.toRadixString(8), path]);
+    } catch (_) {}
   }
 
   /// 写二进制（编辑器里 base64 落盘那条路径用）。
@@ -192,11 +214,13 @@ class LocalFs {
   }
 
   /// 工程文件树（替代 find -printf 脚本）。
-  /// 返回相对路径列表：目录以 '/' 结尾，跳过 build/.dart_tool/.git。
+  /// 返回相对路径列表：目录以 '/' 结尾；只跳过构建产物/缓存/版本库，
+  /// 其它 dotfile（.gitignore/.metadata/.idea/.vscode…）照常显示——
+  /// Android 的 find 本来就能看到它们，桌面端不该少。
   List<String> listTree(String root) {
     final dir = Directory(root);
     if (!dir.existsSync()) return const <String>[];
-    final skip = <String>{'build', '.dart_tool', '.git'};
+    const skip = <String>{'build', '.dart_tool', '.git'};
     final out = <String>[];
     void walk(Directory d, String prefix) {
       List<FileSystemEntity> entries;
@@ -206,8 +230,8 @@ class LocalFs {
         return;
       }
       for (final e in entries) {
-        final name = _leaf(e.path);
-        if (name.startsWith('.')) continue;
+        final name = baseName(e.path);
+        if (name.isEmpty || name == '.' || name == '..') continue;
         if (e is Directory) {
           if (skip.contains(name)) continue;
           out.add('$prefix$name/');
@@ -234,15 +258,9 @@ class LocalFs {
     return s.replaceAll('/', Platform.pathSeparator);
   }
 
-  String _join(String a, String b) => a.endsWith(Platform.pathSeparator)
-      ? '$a$b'
-      : '$a${Platform.pathSeparator}$b';
+  String _join(String a, String b) => joinPath(a, b);
 
-  String _leaf(String p) {
-    final norm = p.replaceAll('\\', '/');
-    final i = norm.lastIndexOf('/');
-    return i >= 0 ? norm.substring(i + 1) : norm;
-  }
+  String _leaf(String p) => baseName(p);
 
   String _cmp(String p) => _caseInsensitive ? p.toLowerCase() : p;
 }

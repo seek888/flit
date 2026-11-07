@@ -1,485 +1,218 @@
-import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
-/// 桌面端（Windows 优先）工具链管理：
-/// 所有东西只落在应用私有目录里，不写注册表、不改系统 PATH。
+import 'toolchain/archive.dart';
+import 'toolchain/component_probe.dart';
+import 'toolchain/download.dart';
+import 'toolchain/installer.dart';
+import 'toolchain/layout.dart';
+import 'toolchain/probe.dart';
+import 'toolchain/process.dart';
+import 'toolchain/sdk_manager.dart';
+
+export 'toolchain/component_probe.dart'
+    show ComponentRequest, DesktopComponentProbe, MissingComponent;
+export 'toolchain/errors.dart' show ToolchainException;
+export 'toolchain/installer.dart' show ToolchainInstaller;
+export 'toolchain/layout.dart' show ToolchainLayout;
+export 'toolchain/probe.dart'
+    show ToolchainStageMarker, ToolchainStatus, stageMarkerTextOf;
+
+/// 桌面端（Windows）工具链门面。
 ///
-/// 目录布局：
-///   `<home>/jdk/`            Temurin 17（解压版）
-///   `<home>/android-sdk/`    cmdline-tools + platform-tools + platforms + build-tools
-///   `<home>/flutter/`        官方 Flutter SDK（给用户项目用）
-///   `<home>/gradle-home/`    GRADLE_USER_HOME
-///   `<home>/pub-cache/`      PUB_CACHE
-///   `<home>/projects/`       工程
-///   `<home>/cache/`          下载缓存
+/// 所有东西只落在应用私有目录里，不写注册表、不改系统 PATH。真正的实现
+/// 在 `lib/services/toolchain/` 分层里：layout / download / archive /
+/// process / probe / sdk_manager / installer / component_probe。
+///
+/// 对外保持向后兼容：路径 getter、`childEnvironment`、`status()`、
+/// `install()`、`versionOf()` 的旧调用点无需改动。
 class DesktopToolchain {
-  DesktopToolchain({String? home}) : home = home ?? defaultHome();
+  DesktopToolchain({
+    String? home,
+    ToolchainLayout? layout,
+    ToolchainInstaller? installer,
+  }) : layout =
+           layout ??
+           ToolchainLayout(home: home ?? ToolchainLayout.defaultHome()),
+       _installer = installer;
 
-  final String home;
+  final ToolchainLayout layout;
 
-  static String defaultHome() {
-    final override = Platform.environment['FLIT_DESKTOP_HOME'];
-    if (override != null && override.trim().isNotEmpty) return override.trim();
-    if (Platform.isWindows) {
-      final local = Platform.environment['LOCALAPPDATA'];
-      if (local != null && local.isNotEmpty) return '$local\\FlitDesk';
-      return '${Directory.current.path}\\FlitDesk';
-    }
-    final h = Platform.environment['HOME'] ?? Directory.current.path;
-    return '$h/.flitdesk';
-  }
+  ToolchainInstaller? _installer;
+  ToolchainProbe? _probe;
+  DesktopComponentProbe? _components;
+  ToolchainProcessGateway? _process;
 
-  static const String cmdlineToolsBuild = '13114758';
-  static const String defaultBuildTools = '36.0.0';
-  static const String defaultPlatform = 'android-36';
+  static String defaultHome() => ToolchainLayout.defaultHome();
 
-  String get jdkDir => _p('jdk');
-  String get sdkDir => _p('android-sdk');
-  String get flutterDir => _p('flutter');
-  String get gradleHome => _p('gradle-home');
-  String get pubCache => _p('pub-cache');
-  String get projectsDir => _p('projects');
-  String get gitDir => _p('git');
-  String get cacheDir => _p('cache');
+  static const String cmdlineToolsBuild = ToolchainLayout.cmdlineToolsBuild;
+  static const String defaultBuildTools = ToolchainLayout.defaultBuildTools;
+  static const String defaultPlatform = ToolchainLayout.defaultPlatform;
+  static const String defaultPlatformVersion =
+      ToolchainLayout.defaultPlatformVersion;
 
-  String _p(String name) => home.endsWith(Platform.pathSeparator)
-      ? '$home$name'
-      : '$home${Platform.pathSeparator}$name';
+  ToolchainProcessGateway get process =>
+      _process ??= const SystemToolchainProcess();
+  ToolchainInstaller get installer =>
+      _installer ??= ToolchainInstaller(layout: layout, process: process);
+  ToolchainProbe get probe => _probe ??= ToolchainProbe(layout: layout);
+  DesktopComponentProbe get componentProbe =>
+      _components ??= DesktopComponentProbe(layout: layout);
 
-  String get _sep => Platform.pathSeparator;
+  SdkManager get sdkManager => installer.sdkManager;
+  Downloader get downloader => installer.downloader;
+  ArchiveExtractor get archive => installer.archive;
 
-  String get javaExe => '$jdkDir${_sep}bin${_sep}java$_exe';
-  String get adbExe => '$sdkDir${_sep}platform-tools${_sep}adb$_exe';
-  String get flutterExe => '$flutterDir${_sep}bin${_sep}flutter$_bat';
-  String get gitExe => '$gitDir${_sep}cmd${_sep}git$_exe';
-  String get gitCmdDir => '$gitDir${_sep}cmd';
+  String get home => layout.home;
+  bool get isWindows => layout.windows;
 
-  String get _exe => Platform.isWindows ? '.exe' : '';
-  String get _bat => Platform.isWindows ? '.bat' : '';
+  String get jdkDir => layout.jdkDir;
+  String get sdkDir => layout.sdkDir;
+  String get flutterDir => layout.flutterDir;
+  String get gradleHome => layout.gradleHome;
+  String get pubCache => layout.pubCache;
+  String get projectsDir => layout.projectsDir;
+  String get gitDir => layout.gitDir;
+  String get cacheDir => layout.cacheDir;
 
-  /// 子进程要注入的环境（完全隔离）。
-  Map<String, String> get childEnvironment {
-    final env = Map<String, String>.from(Platform.environment);
-    final pathKey = Platform.isWindows ? 'Path' : 'PATH';
-    final parts = <String>[
-      '$jdkDir${_sep}bin',
-      '$flutterDir${_sep}bin',
-      '$sdkDir${_sep}platform-tools',
-      '$sdkDir${_sep}cmdline-tools${_sep}latest${_sep}bin',
-      gitCmdDir,
-      env[pathKey] ?? '',
-    ].where((e) => e.isNotEmpty).toList();
-    env['JAVA_HOME'] = jdkDir;
-    env['ANDROID_HOME'] = sdkDir;
-    env['ANDROID_SDK_ROOT'] = sdkDir;
-    env['PUB_CACHE'] = pubCache;
-    env['GRADLE_USER_HOME'] = gradleHome;
-    env[pathKey] = parts.join(Platform.isWindows ? ';' : ':');
-    return env;
-  }
+  String get javaExe => layout.javaExe;
+  String get adbExe => layout.adbExe;
+  String get flutterExe => layout.flutterBat;
+  String get gitExe => layout.gitExe;
+  String get gitCmdDir => layout.gitCmdDir;
+
+  /// 子进程要注入的环境（完全隔离）。保留 getter 形态以兼容旧调用点。
+  Map<String, String> get childEnvironment => layout.childEnvironment();
+
+  /// 带额外变量的子进程环境（如代理/测试用）。
+  Map<String, String> childEnvironmentWith({
+    Map<String, String> extra = const <String, String>{},
+  }) => layout.childEnvironment(extra: extra);
 
   // ---------- 状态检测 ----------
 
-  Future<ToolchainStatus> status() async {
-    final jdkOk = await _canRun(javaExe, const <String>['-version']);
-    final adbOk = await _canRun(adbExe, const <String>['version']);
-    final aapt2 =
-        '$sdkDir${_sep}build-tools$_sep$defaultBuildTools${_sep}aapt2$_exe';
-    final jar =
-        '$sdkDir${_sep}platforms$_sep$defaultPlatform${_sep}android.jar';
-    final flutterOk = await _canRun(flutterExe, const <String>['--version']);
-    final gitOk =
-        File(gitExe).existsSync() ||
-        await _canRun('git$_exe', const <String>['--version']);
-    return ToolchainStatus(
-      jdk: jdkOk,
-      androidSdk: adbOk,
-      aapt2: File(aapt2).existsSync(),
-      platform: File(jar).existsSync(),
-      flutter: flutterOk,
-      git: gitOk,
-    );
+  /// 结构判据（默认）：只看文件/目录，不 exec，可高频调用。
+  ///
+  /// `structuralOnly: false` 时额外用 25s 超时校验 java/adb/git 能执行；
+  /// Flutter 永不在这里 exec（首次运行可能是分钟级，用 [warmUp]）。
+  Future<ToolchainStatus> status({bool structuralOnly = true}) async {
+    final structural = probe.inspect();
+    if (structuralOnly) return structural;
+    final jdk =
+        structural.jdk &&
+        await _canRun(layout.javaExe, const <String>['-version']);
+    final adb =
+        structural.androidSdk &&
+        await _canRun(layout.adbExe, const <String>['version']);
+    final gitPath = File(layout.gitExe).existsSync()
+        ? layout.gitExe
+        : layout.which('git');
+    final git =
+        structural.git &&
+        gitPath != null &&
+        await _canRun(gitPath, const <String>['--version']);
+    return structural.copyWith(jdk: jdk, androidSdk: adb, git: git);
   }
 
-  Future<bool> _canRun(String exe, List<String> args) async {
-    if (!File(exe).existsSync()) return false;
+  /// `.bat/.cmd` 由 `cmd.exe /c` 启动（见 ToolchainProcessGateway），
+  /// 裸名先按 PATH 解析；超时可配（默认 25s）。
+  Future<bool> _canRun(
+    String executable,
+    List<String> arguments, {
+    Duration timeout = const Duration(seconds: 25),
+  }) async {
+    final path = _resolveExecutable(executable);
+    if (path == null) return false;
     try {
-      final r = await Process.run(
-        exe,
-        args,
+      final result = await process.run(
+        path,
+        arguments,
         environment: childEnvironment,
-        runInShell: false,
-      ).timeout(const Duration(seconds: 25));
-      return r.exitCode == 0 ||
-          (r.stdout.toString().isNotEmpty || r.stderr.toString().isNotEmpty);
+        timeout: timeout,
+      );
+      final output = '${result.stdout}${result.stderr}'.trim();
+      return result.exitCode == 0 || output.isNotEmpty;
     } catch (_) {
       return false;
     }
   }
 
+  String? _resolveExecutable(String executable) {
+    if (File(executable).existsSync()) return executable;
+    if (executable.contains('/') || executable.contains('\\')) return null;
+    return layout.which(executable);
+  }
+
   // ---------- 安装 ----------
 
-  /// 按阶段安装；yield 日志行，供 UI 终端展示。
+  /// 按阶段安装；yield 日志行，供 UI 终端展示。已装且结构通过则跳过。
   Stream<String> install({
     bool flutter = true,
     bool androidSdk = true,
-    String platform = defaultPlatform,
-    String buildTools = defaultBuildTools,
-  }) async* {
-    Directory(home).createSync(recursive: true);
-    Directory(cacheDir).createSync(recursive: true);
+    String platform = ToolchainLayout.defaultPlatform,
+    String buildTools = ToolchainLayout.defaultBuildTools,
+  }) => installer.installAll(
+    flutter: flutter,
+    androidSdk: androidSdk,
+    platform: platform,
+    buildTools: buildTools,
+  );
 
-    yield '[1/4] 准备 JDK 17 ...';
-    if (File(javaExe).existsSync()) {
-      yield 'JDK 已存在，跳过';
-    } else {
-      final zip = '$cacheDir${_sep}jdk17.zip';
-      await _download(
-        'https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jdk/hotspot/normal/eclipse',
-        zip,
-        (got, total) {},
-      );
-      yield '解压 JDK ...';
-      final tmp = '$cacheDir${_sep}jdk-tmp';
-      _rmrf(tmp);
-      _extract(zip, tmp);
-      final children = Directory(tmp)
-          .listSync()
-          .whereType<Directory>()
-          .toList();
-      _rmrf(jdkDir);
-      if (children.isNotEmpty) {
-        children.first.renameSync(jdkDir);
-      } else {
-        Directory(tmp).renameSync(jdkDir);
-      }
-      _rmrf(tmp);
-      yield 'JDK 完成';
-    }
+  /// 预热：跑一次 `flutter --version`（流式、长超时），成功后写标记文件。
+  /// 状态检测不依赖它；离线环境可 [skipWarmup]。
+  Stream<String> warmUpLines({
+    Duration timeout = const Duration(minutes: 30),
+  }) => installer.warmUp(timeout: timeout);
 
-    if (androidSdk) {
-      yield '[2/4] 准备 Android cmdline-tools ...';
-      final toolsBin =
-          '$sdkDir${_sep}cmdline-tools${_sep}latest${_sep}bin${_sep}sdkmanager$_bat';
-      if (!File(toolsBin).existsSync()) {
-        final zip = '$cacheDir${_sep}cmdline-tools.zip';
-        await _download(
-          'https://dl.google.com/android/repository/commandlinetools-win-${cmdlineToolsBuild}_latest.zip',
-          zip,
-          (got, total) {},
-        );
-        final tmp = '$cacheDir${_sep}tools-tmp';
-        _rmrf(tmp);
-        _extract(zip, tmp);
-        final children = Directory(tmp)
-            .listSync()
-            .whereType<Directory>()
-            .toList();
-        _rmrf('$sdkDir${_sep}cmdline-tools');
-        Directory('$sdkDir${_sep}cmdline-tools').createSync(recursive: true);
-        if (children.isNotEmpty) {
-          children.first.renameSync('$sdkDir${_sep}cmdline-tools${_sep}latest');
-        }
-        _rmrf(tmp);
-      }
-
-      yield '[3/4] 接受许可并安装 platform-tools / platforms / build-tools ...';
-      await _acceptLicenses(toolsBin);
-      final r = await Process.run(
-        toolsBin,
-        <String>[
-          '--sdk_root=$sdkDir',
-          'platform-tools',
-          'platforms;$platform',
-          'build-tools;$buildTools',
-        ],
-        environment: childEnvironment,
-        runInShell: true,
-      ).timeout(const Duration(minutes: 20));
-      final out = '${r.stdout}${r.stderr}'.trim();
-      if (out.isNotEmpty) yield out.split('\n').last;
-      yield r.exitCode == 0
-          ? 'Android SDK 组件就绪'
-          : 'sdkmanager 退出码 ${r.exitCode}';
-    }
-
-    if (flutter) {
-      yield '[4/5] 准备 Git（MinGit 便携版）...';
-      if (File(gitExe).existsSync()) {
-        yield 'Git 已存在，跳过';
-      } else {
-        final url = await _resolveMinGitUrl();
-        if (url == null) {
-          yield '无法解析 MinGit 下载地址，跳过（克隆/Git 面板将不可用）';
-        } else {
-          final zip = '$cacheDir${_sep}mingit.zip';
-          await _download(url, zip, (got, total) {});
-          final tmp = '$cacheDir${_sep}git-tmp';
-          _rmrf(tmp);
-          _extract(zip, tmp);
-          _rmrf(gitDir);
-          Directory(tmp).renameSync(gitDir);
-          _rmrf(tmp);
-          yield 'Git 完成';
-        }
-      }
-
-      yield '[5/5] 准备 Flutter SDK ...';
-      if (File(flutterExe).existsSync()) {
-        yield 'Flutter 已存在，跳过';
-      } else {
-        final ver = await _resolveFlutterWindowsZip();
-        if (ver == null) {
-          yield '无法解析 Flutter 版本清单';
-        } else {
-          final zip = '$cacheDir${_sep}flutter.zip';
-          await _download(ver, zip, (got, total) {});
-          yield '解压 Flutter（约 1 GB，慢一点）...';
-          final tmp = '$cacheDir${_sep}flutter-tmp';
-          _rmrf(tmp);
-          _extract(zip, tmp);
-          final children = Directory(tmp)
-              .listSync()
-              .whereType<Directory>()
-              .toList();
-          _rmrf(flutterDir);
-          if (children.isNotEmpty) {
-            children.first.renameSync(flutterDir);
-          }
-          _rmrf(tmp);
-          yield 'Flutter 完成';
-        }
-      }
-    }
-
-    final st = await status();
-    yield st.summary;
-  }
-
-  Future<void> _acceptLicenses(String sdkmanager) async {
-    try {
-      final p = await Process.start(
-        sdkmanager,
-        <String>['--sdk_root=$sdkDir', '--licenses'],
-        environment: childEnvironment,
-        runInShell: true,
-      );
-      p.stdin.write('${List<String>.filled(60, 'y').join('\n')}\n');
-      await p.stdin.flush();
-      await p.stdin.close();
-      await p.stdout.drain<void>();
-      await p.stderr.drain<void>();
-      await p.exitCode.timeout(const Duration(minutes: 5), onTimeout: () => -1);
-    } catch (_) {}
-  }
-
-  /// 从 git-for-windows 最新 release 里找 MinGit 64 位 zip。
-  Future<String?> _resolveMinGitUrl() async {
-    try {
-      final body = await _getText(
-        'https://api.github.com/repos/git-for-windows/git/releases/latest',
-      );
-      final json = jsonDecode(body) as Map<String, dynamic>;
-      final assets = (json['assets'] as List<dynamic>? ?? const <dynamic>[])
-          .cast<Map<String, dynamic>>();
-      for (final a in assets) {
-        final name = (a['name'] as String? ?? '').toLowerCase();
-        if (name.contains('mingit') &&
-            name.contains('64-bit') &&
-            name.endsWith('.zip')) {
-          return a['browser_download_url'] as String?;
-        }
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  /// 从官方清单解析当前 stable 的 Windows 包地址。
-  Future<String?> _resolveFlutterWindowsZip() async {
-    try {
-      final body = await _getText(
-        'https://storage.googleapis.com/flutter_infra_release/releases/releases_windows.json',
-      );
-      final json = jsonDecode(body) as Map<String, dynamic>;
-      final base = json['base_url'] as String? ?? '';
-      final current = json['current_release'] as Map<String, dynamic>?;
-      final hash = current?['stable'] as String?;
-      final releases = (json['releases'] as List<dynamic>? ?? const <dynamic>[])
-          .cast<Map<String, dynamic>>();
-      for (final r in releases) {
-        if (hash != null && r['hash'] == hash) {
-          final archive = r['archive'] as String?;
-          if (archive != null) return '$base/$archive';
-        }
-      }
-      if (releases.isNotEmpty) {
-        final archive = releases.first['archive'] as String?;
-        if (archive != null) return '$base/$archive';
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  // ---------- 网络 ----------
-
-  Future<String> _getText(String url) async {
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 30);
-    try {
-      final body = await _request(client, url, const <String>[]);
-      return utf8.decode(body, allowMalformed: true);
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  Future<void> _download(
-    String url,
-    String dest,
-    void Function(int got, int total) onProgress,
-  ) async {
-    final file = File(dest);
-    if (file.existsSync() && file.lengthSync() > 1024 * 1024) return; // 已有缓存
-    file.parent.createSync(recursive: true);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 30);
-    try {
-      final bytes = await _request(
-        client,
-        url,
-        const <String>[],
-        sink: file.openWrite(),
-      );
-      if (bytes.isEmpty) throw StateError('下载为空: $url');
-      if (file.existsSync() && file.lengthSync() < 1024) {
-        throw StateError('下载过小: $url');
-      }
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  /// 手动跟随 3xx（Dart HttpClient 默认不跟随），支持流式写入 sink。
-  Future<List<int>> _request(
-    HttpClient client,
-    String url,
-    List<String> _, {
-    IOSink? sink,
+  Future<void> warmUp({
+    required void Function(String line) log,
+    Duration timeout = const Duration(minutes: 30),
   }) async {
-    var current = Uri.parse(url);
-    for (var i = 0; i < 8; i++) {
-      final req = await client.getUrl(current);
-      req.headers.set('User-Agent', 'FlitDesk/1.0');
-      final res = await req.close();
-      if (res.statusCode >= 300 && res.statusCode < 400) {
-        final loc = res.headers.value('location');
-        await res.drain<void>();
-        if (loc == null) throw StateError('重定向缺少 location');
-        current = current.resolve(loc);
-        continue;
-      }
-      if (res.statusCode >= 400) {
-        await res.drain<void>();
-        throw StateError('HTTP ${res.statusCode}: $url');
-      }
-      final builder = BytesBuilder(copy: false);
-      await for (final chunk in res) {
-        builder.add(chunk);
-        sink?.add(chunk);
-      }
-      await sink?.flush();
-      await sink?.close();
-      return builder.takeBytes();
+    await for (final line in warmUpLines(timeout: timeout)) {
+      log(line);
     }
-    throw StateError('重定向次数过多: $url');
   }
 
-  // ---------- 解压 ----------
+  /// 离线跳过预热：写标记，结构判据视为完成。
+  Future<void> skipWarmup() => installer.skipWarmup();
 
-  void _extract(String zip, String dest) {
-    Directory(dest).createSync(recursive: true);
-    if (Platform.isWindows) {
-      // Windows 10 1803+ 自带 bsdtar，能解 zip 且比 Expand-Archive 快
-      final r = Process.runSync('tar.exe', <String>['-xf', zip, '-C', dest]);
-      if (r.exitCode == 0) return;
-      final ps = Process.runSync('powershell.exe', <String>[
-        '-NoProfile',
-        '-Command',
-        'Expand-Archive -LiteralPath "$zip" -DestinationPath "$dest" -Force',
-      ]);
-      if (ps.exitCode != 0) {
-        throw StateError('解压失败: ${ps.stderr}');
-      }
-      return;
+  /// 安装单个 Android SDK 组件（供 D4 构建链补齐用）。
+  Future<void> installComponent(
+    ComponentRequest component, {
+    void Function(String line)? log,
+  }) async {
+    await for (final line in installer.installComponent(component)) {
+      log?.call(line);
     }
-    final r = Process.runSync('unzip', <String>['-q', zip, '-d', dest]);
-    if (r.exitCode != 0) throw StateError('解压失败: ${r.stderr}');
   }
 
-  void _rmrf(String path) {
-    final d = Directory(path);
-    if (d.existsSync()) d.deleteSync(recursive: true);
+  /// 补齐一组缺失组件（一次 sdkmanager 调用；自动装 cmdline-tools + 接受许可）。
+  Future<void> ensureComponents(
+    List<ComponentRequest> components, {
+    void Function(String line)? log,
+  }) async {
+    await for (final line in installer.ensureComponents(components)) {
+      log?.call(line);
+    }
   }
 
-  // ---------- 版本信息 ----------
-
-  Future<String> versionOf(String component) async {
-    try {
-      switch (component) {
-        case 'jdk':
-          final r = await Process.run(javaExe, const <String>[
-            '-version',
-          ], environment: childEnvironment);
-          return '${r.stderr}${r.stdout}'.split('\n').first.trim();
-        case 'flutter':
-          final r = await Process.run(flutterExe, const <String>[
-            '--version',
-          ], environment: childEnvironment);
-          return '${r.stdout}'.split('\n').first.trim();
-        case 'adb':
-          final r = await Process.run(adbExe, const <String>[
-            'version',
-          ], environment: childEnvironment);
-          return '${r.stdout}'.split('\n').first.trim();
-      }
-    } catch (_) {}
-    return '';
+  /// 裸 sdkmanager 包名（如 `build-tools;36.0.0`）安装。
+  Future<void> installSdkPackages(
+    List<String> packages, {
+    void Function(String line)? log,
+  }) async {
+    await for (final line in installer.installSdkPackages(packages)) {
+      log?.call(line);
+    }
   }
-}
 
-class ToolchainStatus {
-  const ToolchainStatus({
-    required this.jdk,
-    required this.androidSdk,
-    required this.aapt2,
-    required this.platform,
-    required this.flutter,
-    required this.git,
-  });
+  /// 构建前组件检查：纯目录扫描，等价 `android_components.sh`。
+  Future<List<MissingComponent>> checkComponents(
+    List<ComponentRequest> declared, {
+    bool baseline = false,
+    bool device = false,
+  }) => componentProbe.check(declared, baseline: baseline, device: device);
 
-  final bool jdk;
-  final bool androidSdk;
-  final bool aapt2;
-  final bool platform;
-  final bool flutter;
-  final bool git;
-
-  bool get ready => jdk && androidSdk && aapt2 && platform && flutter;
-
-  Map<String, dynamic> toMap() => <String, dynamic>{
-    'jdk': jdk,
-    'androidSdk': androidSdk,
-    'aapt2': aapt2,
-    'platform': platform,
-    'flutter': flutter,
-    'ready': ready,
-  };
-
-  String get summary =>
-      'Git ${git ? 'OK' : '缺失'} / '
-      'JDK ${jdk ? 'OK' : '缺失'} / SDK ${androidSdk ? 'OK' : '缺失'} / '
-          'aapt2 ${aapt2 ? 'OK' : '缺失'} / platform ${platform ? 'OK' : '缺失'} / '
-          'Flutter ${flutter ? 'OK' : '缺失'}';
+  /// 组件版本（从文件读，不 exec；读不到返回空串）。
+  Future<String> versionOf(String component) async =>
+      probe.componentVersion(component) ?? '';
 }

@@ -3,6 +3,8 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../../core/host_platform.dart';
+import '../../services/git_process.dart';
 import '../../services/git_repo.dart';
 import '../terminal/run_sessions.dart';
 import '../workspace/project_documents.dart';
@@ -104,8 +106,50 @@ class ProjectGit extends ChangeNotifier {
     })().whenComplete(() => _operation = null);
   }
 
-  Future<void> _command(List<String> args, {String title = 'Git'}) =>
-      _terminal(repo.command(args), title: title);
+  /// 执行一次 git 操作。
+  ///
+  /// **桌面端**：直接以 argv 调 git（[GitProcess]），输出写进终端日志；
+  /// 不再拼 `VAR=val ... -C 'root'` 这种 shell 字符串（cmd.exe 不认）。
+  /// **Android**：保持原样——把 argv 渲染成 shQuote 命令串进 PTY 会话，
+  /// 这样 flutter_pty 的交互输出/中止行为完全不变。
+  Future<void> _command(List<String> args, {String title = 'Git'}) {
+    if (isDesktopPlatform) return _desktopCommand(args, title: title);
+    return _terminal(GitRepo.androidCommand(repo.root, args), title: title);
+  }
+
+  Future<void> _desktopCommand(
+    List<String> args, {
+    required String title,
+  }) async {
+    if (_closed) return;
+    final result = await repo.run(args);
+    _logCommand(args, result.out);
+    if (result.code != 0) {
+      final detail = result.out.trim();
+      throw StateError(
+        detail.isEmpty
+            ? strings.pIncompleteExitCodePSeeTerminal(title, result.code)
+            : detail,
+      );
+    }
+  }
+
+  /// 桌面端没有 PTY 会话跑 git，把「等价命令 + 原文输出」写进终端日志：
+  /// 成功失败都留痕，失败原文同时经 SnackBar 展示（见 GitPanel._act）。
+  void _logCommand(List<String> args, String output) {
+    if (_closed) return;
+    try {
+      final log = executions.console.log;
+      log.info('\$ ${GitProcess.display(args)}');
+      final text = output.trimRight();
+      if (text.isEmpty) return;
+      for (final line in text.split(RegExp(r'\r?\n'))) {
+        log.line(line);
+      }
+    } catch (_) {
+      // 终端已关闭/会话被替换时忽略：结果仍通过 error/SnackBar 呈现。
+    }
+  }
 
   Future<void> _terminal(String command, {required String title}) async {
     if (_closed) return;
@@ -205,14 +249,22 @@ class ProjectGit extends ChangeNotifier {
     }
   });
   Future<void> setRemote(String url) => _mutate(() async {
-    if (!RegExp(r'^(https?://|ssh://|git@)\S+$').hasMatch(url)) {
+    // 桌面端 MinGit 不含 ssh.exe：SSH 地址自动转 HTTPS，并提示一次。
+    final normalized = isDesktopPlatform ? GitProcess.normalizeUrl(url) : url;
+    final message = isDesktopPlatform ? GitProcess.sshNotice(url) : null;
+    if (!RegExp(r'^(https?://|ssh://|git@)\S+$').hasMatch(normalized)) {
       throw StateError(strings.enterAValidRepositoryUrl);
+    }
+    if (message != null) {
+      try {
+        executions.console.log.warn(message);
+      } catch (_) {}
     }
     final existing = await repo.run(['remote', 'get-url', 'origin']);
     await _command(
       existing.code == 0
-          ? ['remote', 'set-url', 'origin', url]
-          : ['remote', 'add', 'origin', url],
+          ? ['remote', 'set-url', 'origin', normalized]
+          : ['remote', 'add', 'origin', normalized],
     );
   });
   Future<void> setIdentity(String name, String email) => _mutate(() async {
