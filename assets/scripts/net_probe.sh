@@ -1,7 +1,8 @@
 #!/data/data/com.seek888.flit/files/usr/bin/bash
-# 网络检测: 三个目标各管一件事
+# 网络检测: 各目标各管一件事
 #   Google(generate_204) = 全球出网能力(自动代理开关的直观指示灯)
 #   GitHub               = 工具链源直连(git/apt pool 所在)
+#   GitHub镜像(如有)     = 实际下载链路(FLIT_GH_PROXY 前缀, 见 GithubMirror)
 #   百度                 = 国内基线(Google 挂而百度通 = 网络活着只是出不去)
 # 任何 HTTP 应答都算通路存在, 超时/无应答才算不通;
 # 结果以 __NET__ 标记输出供 app 解析展示
@@ -32,4 +33,8 @@ fi
 printf "${C_C}[网络] 正在检测（每个目标最多等待 8 秒）…${C_0}\n"
 probe "Google" "https://www.google.com/generate_204"
 probe "GitHub" "https://github.com"
+if [ -n "${FLIT_GH_PROXY:-}" ]; then
+  # 工具链实际下载链路(镜像前缀 + github.com); 它通而 GitHub 直连不通属正常
+  probe "GitHub镜像" "${FLIT_GH_PROXY}https://github.com"
+fi
 probe "百度" "https://www.baidu.com"

@@ -3,6 +3,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../../services/github_mirror.dart';
+
 /// 查询已配置构建仓库的 GitHub Releases，失败时保留本次会话内的缓存。
 class ToolchainCatalog {
   ToolchainCatalog({this.sources = components});
@@ -20,14 +22,15 @@ class ToolchainCatalog {
   Map<String, List<CatalogEntry>>? _snapshot;
 
   // Only repository names, release tags and asset naming rules are bundled.
-  // URLs, hashes and sizes always come from GitHub at installation time.
+  // URLs, hashes and sizes always come from GitHub at installation time
+  // (routed through GithubMirror for mainland China reachability).
   static const sdkRepo = String.fromEnvironment(
     'FLIT_ANDROID_SDK_REPO',
     defaultValue: 'lycstar/android-sdk-custom',
   );
   static const packagesRepo = String.fromEnvironment(
     'FLIT_PACKAGES_REPO',
-    defaultValue: 'lycstar/flit-termux-packages',
+    defaultValue: 'seek888/flit-termux-packages',
   );
   static const sdkVersion = '36.0.0';
   static const platformVersion = '36';
@@ -125,7 +128,9 @@ class ToolchainCatalog {
       throw StateError(strings.noValidPReleaseConfiguredP(component, selected));
     }
     final data = await fetchJson(
-      'https://api.github.com/repos/${source.repo}/releases/tags/${Uri.encodeComponent(selected)}',
+      GithubMirror.wrap(
+        'https://api.github.com/repos/${source.repo}/releases/tags/${Uri.encodeComponent(selected)}',
+      ),
     );
     if (data is! Map || data['tag_name'] != selected || data['draft'] == true) {
       throw StateError(strings.releaseUnavailableP(selected));
@@ -160,7 +165,9 @@ class ToolchainCatalog {
         repo: source.repo,
         tag: tag,
         name: name,
-        url: asset['browser_download_url'] as String? ?? '',
+        url: GithubMirror.wrap(
+          asset['browser_download_url'] as String? ?? '',
+        ),
         size: asset['size'] as int? ?? 0,
         sha256: parseSha256(asset['digest'] as String?),
         publishedAt: DateTime.tryParse(
@@ -174,7 +181,9 @@ class ToolchainCatalog {
     final all = <dynamic>[];
     for (var page = 1; ; page++) {
       final data = await fetchJson(
-        'https://api.github.com/repos/$repo/releases?per_page=100&page=$page',
+        GithubMirror.wrap(
+          'https://api.github.com/repos/$repo/releases?per_page=100&page=$page',
+        ),
       );
       if (data is! List) {
         throw FormatException(strings.invalidGithubReleasesResponse);
