@@ -67,38 +67,76 @@ jobs:
           }
           if ($copied -eq 0) { Write-Host "warning: 没有找到运行库，跳过" }
 
-      - name: Package artifact
-        if: success()
+      - name: Compute release version
+        id: ver
+        shell: pwsh
+        run: |
+          $line = Select-String -Path pubspec.yaml -Pattern '^version:\s*([^\s+]+)' | Select-Object -First 1
+          if (-not $line) { throw "无法从 pubspec.yaml 读取版本号" }
+          $v = $line.Matches[0].Groups[1].Value
+          $sha = "${{ github.sha }}".Substring(0,7)
+          Write-Host "version=$v sha7=$sha"
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "sha7=$sha" >> $env:GITHUB_OUTPUT
+
+      - name: Package portable zip
         shell: pwsh
         run: |
           $src = "build\windows\x64\runner\Release"
           if (-not (Test-Path $src)) { throw "构建产物不存在: $src" }
           Get-ChildItem $src | Select-Object Name, Length
-          Compress-Archive -Path "$src\*" -DestinationPath "$env:GITHUB_WORKSPACE\flit-windows-x64.zip" -Force
-          Get-Item "$env:GITHUB_WORKSPACE\flit-windows-x64.zip" | Select-Object Name, Length
+          $name = "flit-windows-x64-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.sha7 }}.zip"
+          Compress-Archive -Path "$src\*" -DestinationPath "$env:GITHUB_WORKSPACE\$name" -Force
+          Get-Item "$env:GITHUB_WORKSPACE\$name" | Select-Object Name, Length
 
-      - name: Upload artifact
+      # 真正的「安装包」：per-user 安装、开始菜单/桌面快捷方式、卸载项。
+      # 便携 zip 保留（解压即用），两种分发形态并存。
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "找不到 Inno Setup 编译器: $iscc" }
+          & $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" "/DBuildSha=${{ steps.ver.outputs.sha7 }}" "windows\installer\flit.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败" }
+          $exe = "FlitSetup-${{ steps.ver.outputs.version }}-x64.exe"
+          Copy-Item "windows\installer\Output\$exe" "$env:GITHUB_WORKSPACE\$exe"
+          Get-Item "$env:GITHUB_WORKSPACE\$exe" | Select-Object Name, Length
+
+      - name: Upload portable zip
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: flit-windows-x64
-          path: flit-windows-x64.zip
+          path: flit-windows-x64-*.zip
           retention-days: 14
 
-      # 顺便发成 Release，方便直接点链接下载（不需要登录）
+      - name: Upload installer
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flit-windows-setup
+          path: FlitSetup-*-x64.exe
+          retention-days: 14
+
+      # 发成 Release，方便直接点链接下载（不需要登录）。
+      # tag 故意不以 v 开头：避免触发 android-release.yml 的 `v*` tag 规则。
       - name: Publish preview release
         if: success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: windows-preview-${{ github.run_number }}
-          name: Windows preview #${{ github.run_number }}
+          tag_name: win-v${{ steps.ver.outputs.version }}.${{ github.run_number }}
+          name: Windows preview ${{ steps.ver.outputs.version }} #${{ github.run_number }}
           body: |
-            自动构建的 Windows 预览包（仅验证可编译/可启动）。
+            Flit for Windows，自动构建产物（commit `${{ steps.ver.outputs.sha7 }}`）。
 
-            解压后运行 `flit.exe`。
+            - `FlitSetup-${{ steps.ver.outputs.version }}-x64.exe`：安装版（per-user，无需管理员）
+            - `flit-windows-x64-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.sha7 }}.zip`：便携版，解压运行 `flit.exe`
 
-            已知：环境安装、构建 APK、ADB 等功能尚未移植到 Windows。
-          files: flit-windows-x64.zip
+            安装版与便携版功能相同，任选其一。首次启动后到「开发环境」页完成工具链安装。
+          files: |
+            FlitSetup-${{ steps.ver.outputs.version }}-x64.exe
+            flit-windows-x64-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.sha7 }}.zip
           prerelease: true
           draft: false
 
@@ -112,3 +150,48 @@ jobs:
             test.log
           if-no-files-found: ignore
           retention-days: 7
+
+  # Windows 宿主构建能力的冒烟测试：证明「在 Windows 上能出 APK 和 Web 产物」。
+  # 用一个最小 Flutter 工程跑，不是 Flit 自己；Flit 的应用内构建命令与这里同构。
+  desktop-build-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    continue-on-error: true
+    steps:
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.8
+          cache: true
+
+      - name: Show host toolchain
+        shell: pwsh
+        run: |
+          flutter doctor -v
+          Write-Host "ANDROID_HOME=$env:ANDROID_HOME"
+          Write-Host "ANDROID_SDK_ROOT=$env:ANDROID_SDK_ROOT"
+          Write-Host "JAVA_HOME=$env:JAVA_HOME"
+
+      - name: Build Web sample
+        shell: pwsh
+        run: |
+          flutter create --platforms=web --project-name smoke_web smoke_web
+          Set-Location smoke_web
+          flutter build web --release
+          if (-not (Test-Path "build\web\index.html")) { throw "Web 产物缺失" }
+          Get-ChildItem build\web | Select-Object -First 8 Name, Length
+
+      - name: Build APK sample
+        shell: pwsh
+        run: |
+          flutter create --platforms=android --project-name smoke_apk smoke_apk
+          Set-Location smoke_apk
+          flutter build apk --debug --target-platform android-arm64
+          if (-not (Test-Path "build\app\outputs\flutter-apk\app-debug.apk")) { throw "APK 产物缺失" }
+          Get-Item "build\app\outputs\flutter-apk\app-debug.apk" | Select-Object Name, Length
