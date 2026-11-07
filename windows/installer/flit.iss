@@ -52,9 +52,15 @@ VersionInfoDescription=Flit Windows installer
 VersionInfoProductName={#AppName}
 VersionInfoProductVersion={#NumericVersion}
 
+; 简体中文语言文件随仓库提供（Inno Setup 官方 jrsoftware/issrc 的 Files/Languages/ChineseSimplified.isl）。
+; CI 的 choco 安装包只带 Default.isl，所以用脚本目录（ISPP 的 SourcePath）引用仓库内文件；
+; 文件不在时退回只装英文，避免编译失败。
+#define ChineseIsl SourcePath + "ChineseSimplified.isl"
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
+#if FileExists(ChineseIsl)
+Name: "chinesesimplified"; MessagesFile: "{#ChineseIsl}"
+#endif
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked

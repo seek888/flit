@@ -45,7 +45,8 @@ void main() {
       final markers = {for (final marker in runner.check()) marker.id: marker};
       expect(markers['android_jdk']!.ok, isFalse);
       expect(markers['android_sdk']!.ok, isFalse);
-      expect(markers['flutter_tools']!.ok, isFalse);
+      // CI/开发机通常已经装了系统 git，桌面端会「采用」它（不重复安装），
+      // 所以 git 阶段在空 home 下也可能是 DONE —— 这里不强制 false。
       expect(markers['flutter_sdk']!.ok, isFalse);
       expect(markers['flutter_warmup']!.ok, isFalse);
 
