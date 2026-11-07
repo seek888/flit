@@ -12,7 +12,7 @@ void main() {
 
   tearDown(() => setHostPlatform(null));
 
-  test('desktop APK commands have no bash / $HOME / .flit scripts prefix', () {
+  test('desktop APK commands have no bash / \$HOME / .flit scripts prefix', () {
     final debug = buildApkCommand(release: false, desktop: true);
     final release = buildApkCommand(release: true, desktop: true);
     expect(

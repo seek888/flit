@@ -1,4 +1,5 @@
 import 'package:flit/l10n/strings.dart';
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
