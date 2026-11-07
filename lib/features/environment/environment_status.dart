@@ -63,7 +63,7 @@ class EnvironmentStatus {
         'android_cmake': true,
         'android_gradle': true, // Gradle Wrapper 自己下载到 GRADLE_USER_HOME
         'android_sdk': st.androidSdk && st.aapt2 && st.platform,
-        'flutter_tools': true, // git/gh 走系统 git，缺了也不影响构建
+        'flutter_tools': st.git, // git+gh：桌面端用 MinGit 便携版
         'flutter_sdk': st.flutter,
         'flutter_warmup': true,
       };

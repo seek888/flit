@@ -533,7 +533,6 @@ class EnvironmentController extends ChangeNotifier {
     'android_ndk',
     'android_cmake',
     'android_gradle',
-    'flutter_tools',
     'flutter_warmup',
   ];
 
@@ -544,6 +543,7 @@ class EnvironmentController extends ChangeNotifier {
       '__STAGE__android_jdk:${st.jdk ? 'DONE' : 'MISSING'}',
       '__STAGE__android_sdk:${st.androidSdk && st.aapt2 && st.platform ? 'DONE' : 'MISSING'}',
       '__STAGE__flutter_sdk:${st.flutter ? 'DONE' : 'MISSING'}',
+      '__STAGE__flutter_tools:${st.git ? 'DONE' : 'MISSING'}',
       for (final id in _desktopNotRequired) '__STAGE__$id:DONE',
     ];
     _onPtyText('${marks.join('\n')}\n');
@@ -568,6 +568,10 @@ class EnvironmentController extends ChangeNotifier {
         _line(c, 'Android SDK 已就绪', _cOk);
         stages[id]!.state = 'DONE';
         notifyListeners();
+      } else if (id == 'flutter_tools' && st0.git) {
+        _line(c, 'Git 已就绪', _cOk);
+        stages[id]!.state = 'DONE';
+        notifyListeners();
       } else if (id == 'flutter_sdk' && st0.flutter) {
         _line(c, 'Flutter 已就绪', _cOk);
         stages[id]!.state = 'DONE';
@@ -583,6 +587,8 @@ class EnvironmentController extends ChangeNotifier {
             stream = tc.install(flutter: false, androidSdk: false);
           case 'android_sdk':
             stream = tc.install(flutter: false);
+          case 'flutter_tools':
+            stream = tc.install(androidSdk: false, flutter: true);
           case 'flutter_sdk':
             stream = tc.install(androidSdk: false);
           default:
@@ -595,6 +601,7 @@ class EnvironmentController extends ChangeNotifier {
         final st = await tc.status();
         final ok = switch (id) {
           'android_jdk' => st.jdk,
+          'flutter_tools' => st.git,
           'android_sdk' => st.androidSdk && st.aapt2 && st.platform,
           'flutter_sdk' => st.flutter,
           _ => true,

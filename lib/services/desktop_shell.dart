@@ -62,6 +62,7 @@ class DesktopShell {
     if (_searchIn(toolchain.sdkDir, name) != null) return true;
     if (_searchIn(toolchain.jdkDir, name) != null) return true;
     if (_searchIn(toolchain.flutterDir, name) != null) return true;
+    if (_searchIn(toolchain.gitDir, name) != null) return true;
     final path =
         Platform.environment[Platform.isWindows ? 'Path' : 'PATH'] ?? '';
     final sep = Platform.isWindows ? ';' : ':';
