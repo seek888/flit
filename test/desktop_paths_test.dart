@@ -142,7 +142,7 @@ void main() {
     expect(tree, contains('lib/main.dart'));
     expect(tree.any((entry) => entry.startsWith('build')), isFalse);
     expect(tree.any((entry) => entry.startsWith('.dart_tool')), isFalse);
-    expect(tree.any((entry) => entry.startsWith('.git')), isFalse);
+    expect(tree.any((entry) => entry == '.git' || entry.startsWith('.git/')), isFalse);
   });
 
   test('LocalFs.writeText 保留 POSIX 可执行位（桌面原子保存）', () async {

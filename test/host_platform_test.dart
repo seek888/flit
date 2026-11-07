@@ -17,6 +17,9 @@ void main() {
   }
 
   test('hostPlatform follows dart:io Platform by default', () {
+    // test/flutter_test_config.dart 为了兼容 Android 语义测试，进程启动时把
+    // 平台固定成 android；这里要验证真实探测，先清掉覆盖。
+    setHostPlatform(null);
     expect(hostPlatform, expectedHost());
     expect(isDesktopPlatform, !Platform.isAndroid);
     expect(isWindowsPlatform, Platform.isWindows);

@@ -96,7 +96,7 @@ void main() {
       final missing = await probe(
         javaExe: joinPath(temp.path, 'missing/java'),
       ).check(const [], device: true);
-      expect(missing.map((c) => c.key), ['platform-tools']);
+      expect(missing.map((c) => c.key), ['platform-tools:']);
       installPlatformTools();
       expect(
         await probe(

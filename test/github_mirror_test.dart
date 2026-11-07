@@ -20,7 +20,7 @@ void main() {
       'https://objects.githubusercontent.com/some/asset',
     ];
     for (final url in urls) {
-      expect(GithubMirror.wrap(url), '$GithubMirror.prefix$url');
+      expect(GithubMirror.wrap(url), '${GithubMirror.prefix}$url');
     }
   });
 

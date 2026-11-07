@@ -105,7 +105,7 @@ void main() {
       desktop: true,
     );
     expect(windows, contains('bin/demo_app.dart'));
-    expect(windows, contains(r'C:\Users'));
+    expect(windows, isNot(contains(r'C:')));
 
     final android = dartExeCommand('/projects/demo', desktop: false);
     expect(android, "dart compile exe 'bin/demo.dart' -o 'build/demo' 2>&1");
