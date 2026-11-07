@@ -213,6 +213,11 @@ class EnvironmentController extends ChangeNotifier {
   /// ndk 安装到 ndk/`<Pkg.Revision>`(AGP 按 ndkVersion 检索); sdk 合并进
   /// 单棵树; flutter 按版本并存，通过 current 切换。
   Future<void> installFromCatalog(CatalogEntry entry) async {
+    if (isDesktopPlatform) {
+      _term('桌面版按整链安装（JDK/SDK/Flutter/Git），不支持单独装某个版本', color: _cWarn);
+      await startPipeline();
+      return;
+    }
     if (busy || _runner == null) {
       _term(strings.aTaskIsRunningWaitBeforeInstalling, color: _cWarn);
       return;
@@ -262,6 +267,10 @@ class EnvironmentController extends ChangeNotifier {
     InstalledToolchain tool, {
     bool delete = false,
   }) async {
+    if (isDesktopPlatform) {
+      _term('桌面版暂不支持多版本切换/删除，重装请删掉工具链目录后重新安装', color: _cWarn);
+      return;
+    }
     if (busy || _runner == null || !_canMutate()) return;
     installing = true;
     AndroidBuildWrapper.installing = true;

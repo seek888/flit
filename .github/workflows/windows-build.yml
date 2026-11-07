@@ -36,6 +36,13 @@ jobs:
       - name: Pub get
         run: flutter pub get
 
+      - name: Unit tests (LocalFs，阻断)
+        run: flutter test test/local_fs_test.dart
+
+      - name: Full test suite (仅记录，不阻断)
+        continue-on-error: true
+        run: flutter test | Tee-Object -FilePath test.log
+
       - name: Analyze (仅记录，不阻断)
         continue-on-error: true
         run: flutter analyze --no-fatal-infos --no-fatal-warnings | Tee-Object -FilePath analyze.log
@@ -78,11 +85,13 @@ jobs:
           prerelease: true
           draft: false
 
-      - name: Upload analyze log
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: analyze-log
-          path: analyze.log
+          name: build-logs
+          path: |
+            analyze.log
+            test.log
           if-no-files-found: ignore
           retention-days: 7
