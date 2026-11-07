@@ -42,6 +42,8 @@ Platform 和 Build Tools 独立选择，保留 `36.1`、`37.0` 等官方 API 编
 | `FLIT_CMAKE_REPO` | CMake |
 | `FLIT_FLUTTER_SDK_REPO` | Flutter SDK |
 
+以上 GitHub 仓库的 API 请求与资产下载（含 APT 源）默认统一加国内加速前缀 `https://gh-proxy.com/`，可用 `FLIT_GH_PROXY` 覆盖：换代理传其前缀（以 `/` 结尾），直连传空值。镜像仅作传输层，SHA-256 校验仍以 GitHub API 返回的摘要为准。
+
 默认基础环境完成判据包含默认 Build Tools、Platform、Platform Tools 和 Command-line Tools。NDK 使用包内 `Pkg.Revision`，CMake 校验实际执行版本。
 
 组件结构与运行检测由 `component_checks.sh` 共用，安装器先在暂存目录验收，再写成功标记并落位；环境检测、已安装列表和构建前检查使用相同判据。继续初始化前重新读取状态，每个安装阶段后复查，检测异常会保留失败退出码。脚本更新采用原子替换；目录替换中断后保留并恢复旧版本备份。

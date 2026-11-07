@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 
 import '../../services/shell.dart' show shQuote;
+import '../../services/github_mirror.dart';
 import 'toolchain_catalog.dart';
 
 /// 脚本驱动的一键初始化编排。
@@ -118,7 +119,9 @@ export CMAKE_VERSION="$cmakeVersion"
 export SDK_VERSION="${ToolchainCatalog.sdkVersion}"
 export SDK_PLATFORM_VERSION="${ToolchainCatalog.platformVersion}"
 export FLUTTER_VERSION="${ToolchainCatalog.flutterVersion}"
-export FLIT_APT_SOURCE=${shQuote('https://github.com/${ToolchainCatalog.packagesRepo}/releases/download/pool ./')}
+export FLIT_APT_SOURCE=${shQuote('${GithubMirror.wrap('https://github.com/${ToolchainCatalog.packagesRepo}/releases/download/pool')} ./')}
+# GitHub 镜像前缀(空 = 直连); 供脚本与网络检测使用, 与 Dart 侧 GithubMirror 一致
+export FLIT_GH_PROXY=${shQuote(GithubMirror.prefix)}
 ''';
   }
 

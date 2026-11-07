@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'github_mirror.dart';
+
 /// 应用自身的 GitHub Releases:检查更新与历史版本浏览/安装。
 /// 与工具链版本目录同一姿态:匿名 API、按需拉取、失败由调用方降级。
 /// 注意 /releases/latest 会排除 prerelease(本项目发布全是 preview),
@@ -27,7 +29,9 @@ class AppReleases {
   Future<List<AppRelease>> collect({int perPage = 30}) async {
     final releases =
         await fetchJson(
-              'https://api.github.com/repos/$repo/releases?per_page=$perPage',
+              GithubMirror.wrap(
+                'https://api.github.com/repos/$repo/releases?per_page=$perPage',
+              ),
             )
             as List? ??
         const [];
@@ -45,7 +49,9 @@ class AppReleases {
               AppAsset(
                 name: asset['name'] as String? ?? '',
                 size: asset['size'] as int? ?? 0,
-                url: asset['browser_download_url'] as String? ?? '',
+                url: GithubMirror.wrap(
+                  asset['browser_download_url'] as String? ?? '',
+                ),
               ),
           ],
         ),

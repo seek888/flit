@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flit/features/environment/toolchain_catalog.dart';
+import 'package:flit/services/github_mirror.dart';
 
 Map<String, dynamic> release(
   String tag,
@@ -118,8 +119,12 @@ void main() {
     expect(sdk.sha256, 'ab'.padRight(64, '0'));
     expect(platform.tag, 'platform-36.1');
     expect(urls, [
-      'https://api.github.com/repos/lycstar/android-sdk-custom/releases/tags/sdk-36.0.0',
-      'https://api.github.com/repos/lycstar/android-sdk-custom/releases/tags/platform-36.1',
+      GithubMirror.wrap(
+        'https://api.github.com/repos/lycstar/android-sdk-custom/releases/tags/sdk-36.0.0',
+      ),
+      GithubMirror.wrap(
+        'https://api.github.com/repos/lycstar/android-sdk-custom/releases/tags/platform-36.1',
+      ),
     ]);
   });
 
