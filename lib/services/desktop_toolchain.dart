@@ -40,6 +40,7 @@ class DesktopToolchain {
   String get gradleHome => _p('gradle-home');
   String get pubCache => _p('pub-cache');
   String get projectsDir => _p('projects');
+  String get gitDir => _p('git');
   String get cacheDir => _p('cache');
 
   String _p(String name) => home.endsWith(Platform.pathSeparator)
@@ -51,6 +52,8 @@ class DesktopToolchain {
   String get javaExe => '$jdkDir${_sep}bin${_sep}java${_exe}';
   String get adbExe => '$sdkDir${_sep}platform-tools${_sep}adb${_exe}';
   String get flutterExe => '$flutterDir${_sep}bin${_sep}flutter$_bat';
+  String get gitExe => '$gitDir${_sep}cmd${_sep}git$_exe';
+  String get gitCmdDir => '$gitDir${_sep}cmd';
 
   String get _exe => Platform.isWindows ? '.exe' : '';
   String get _bat => Platform.isWindows ? '.bat' : '';
@@ -64,6 +67,7 @@ class DesktopToolchain {
       '$flutterDir${_sep}bin',
       '$sdkDir${_sep}platform-tools',
       '$sdkDir${_sep}cmdline-tools${_sep}latest${_sep}bin',
+      gitCmdDir,
       env[pathKey] ?? '',
     ].where((e) => e.isNotEmpty).toList();
     env['JAVA_HOME'] = jdkDir;
@@ -85,12 +89,16 @@ class DesktopToolchain {
     final jar =
         '$sdkDir${_sep}platforms${_sep}$defaultPlatform${_sep}android.jar';
     final flutterOk = await _canRun(flutterExe, const <String>['--version']);
+    final gitOk =
+        File(gitExe).existsSync() ||
+        await _canRun('git$_exe', const <String>['--version']);
     return ToolchainStatus(
       jdk: jdkOk,
       androidSdk: adbOk,
       aapt2: File(aapt2).existsSync(),
       platform: File(jar).existsSync(),
       flutter: flutterOk,
+      git: gitOk,
     );
   }
 
@@ -197,7 +205,27 @@ class DesktopToolchain {
     }
 
     if (flutter) {
-      yield '[4/4] 准备 Flutter SDK ...';
+      yield '[4/5] 准备 Git（MinGit 便携版）...';
+      if (File(gitExe).existsSync()) {
+        yield 'Git 已存在，跳过';
+      } else {
+        final url = await _resolveMinGitUrl();
+        if (url == null) {
+          yield '无法解析 MinGit 下载地址，跳过（克隆/Git 面板将不可用）';
+        } else {
+          final zip = '$cacheDir${_sep}mingit.zip';
+          await _download(url, zip, (got, total) => null);
+          final tmp = '$cacheDir${_sep}git-tmp';
+          _rmrf(tmp);
+          _extract(zip, tmp);
+          _rmrf(gitDir);
+          Directory(tmp).renameSync(gitDir);
+          _rmrf(tmp);
+          yield 'Git 完成';
+        }
+      }
+
+      yield '[5/5] 准备 Flutter SDK ...';
       if (File(flutterExe).existsSync()) {
         yield 'Flutter 已存在，跳过';
       } else {
@@ -244,6 +272,27 @@ class DesktopToolchain {
       await p.stderr.drain<void>();
       await p.exitCode.timeout(const Duration(minutes: 5), onTimeout: () => -1);
     } catch (_) {}
+  }
+
+  /// 从 git-for-windows 最新 release 里找 MinGit 64 位 zip。
+  Future<String?> _resolveMinGitUrl() async {
+    try {
+      final body = await _getText(
+        'https://api.github.com/repos/git-for-windows/git/releases/latest',
+      );
+      final json = jsonDecode(body) as Map<String, dynamic>;
+      final assets = (json['assets'] as List<dynamic>? ?? const <dynamic>[])
+          .cast<Map<String, dynamic>>();
+      for (final a in assets) {
+        final name = (a['name'] as String? ?? '').toLowerCase();
+        if (name.contains('mingit') &&
+            name.contains('64-bit') &&
+            name.endsWith('.zip')) {
+          return a['browser_download_url'] as String?;
+        }
+      }
+    } catch (_) {}
+    return null;
   }
 
   /// 从官方清单解析当前 stable 的 Windows 包地址。
@@ -405,6 +454,7 @@ class ToolchainStatus {
     required this.aapt2,
     required this.platform,
     required this.flutter,
+    required this.git,
   });
 
   final bool jdk;
@@ -412,6 +462,7 @@ class ToolchainStatus {
   final bool aapt2;
   final bool platform;
   final bool flutter;
+  final bool git;
 
   bool get ready => jdk && androidSdk && aapt2 && platform && flutter;
 
@@ -425,7 +476,8 @@ class ToolchainStatus {
   };
 
   String get summary =>
+      'Git ${git ? 'OK' : '缺失'} / ' +
       'JDK ${jdk ? 'OK' : '缺失'} / SDK ${androidSdk ? 'OK' : '缺失'} / '
-      'aapt2 ${aapt2 ? 'OK' : '缺失'} / platform ${platform ? 'OK' : '缺失'} / '
-      'Flutter ${flutter ? 'OK' : '缺失'}';
+          'aapt2 ${aapt2 ? 'OK' : '缺失'} / platform ${platform ? 'OK' : '缺失'} / '
+          'Flutter ${flutter ? 'OK' : '缺失'}';
 }
