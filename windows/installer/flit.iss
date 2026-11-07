@@ -18,6 +18,11 @@
 #ifndef BuildSha
   #define BuildSha "dev"
 #endif
+; VersionInfoProductVersion 只接受纯数字；pubspec 的版本可能带 -preview.N 后缀，
+; CI 会额外传 /DNumericVersion=1.0.0.0。
+#ifndef NumericVersion
+  #define NumericVersion "1.0.0.0"
+#endif
 
 [Setup]
 AppId={{6B7B0C1A-2F6E-4C43-9A0E-9C2E8F3B6A11}
@@ -45,7 +50,7 @@ VersionInfoVersion=1.0.0.0
 VersionInfoCompany={#AppPublisher}
 VersionInfoDescription=Flit Windows installer
 VersionInfoProductName={#AppName}
-VersionInfoProductVersion={#AppVersion}
+VersionInfoProductVersion={#NumericVersion}
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
