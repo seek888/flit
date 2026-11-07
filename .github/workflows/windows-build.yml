@@ -23,16 +23,13 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
+          flutter-version: 3.47.8
           cache: true
 
       - name: Versions
         run: |
           flutter --version
           flutter config --list
-
-      # Flit 仓库里只有 android/ 平台目录，Windows runner 在 CI 里生成
-      - name: Generate Windows runner
-        run: flutter create --platforms=windows --project-name flit --org cc.lycstar .
 
       - name: Pub get
         run: flutter pub get
@@ -44,12 +41,11 @@ jobs:
         continue-on-error: true
         run: flutter test | Tee-Object -FilePath test.log
 
-      - name: Analyze (仅记录，不阻断)
-        continue-on-error: true
+      - name: Analyze
         run: flutter analyze --no-fatal-infos --no-fatal-warnings | Tee-Object -FilePath analyze.log
 
       - name: Build Windows (release)
-        run: flutter build windows --release
+        run: flutter build windows --release --dart-define=BUILD_SHA=${{ github.sha }} --dart-define=FLIT_APP_REPO=${{ github.repository }}
 
       # Flutter Windows 程序依赖 MSVC 运行库；机器上没装 VC++ Redistributable
       # 时会直接弹「找不到 msvcp140.dll」。把运行库一起打进包，解压即用。
