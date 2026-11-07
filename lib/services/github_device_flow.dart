@@ -18,6 +18,9 @@ class GithubDeviceFlow {
   /// OAuth App 的 client_id（公开信息，设备流不需要 client_secret）。
   final String clientId;
 
+  /// 可注入的 HttpClient 工厂（单测用 fake 传输层）。
+  final HttpClient Function() _clientFactory;
+
   /// 构建时注入：`--dart-define=FLIT_GH_CLIENT_ID=...`
   static const String configuredClientId = String.fromEnvironment(
     'FLIT_GH_CLIENT_ID',
