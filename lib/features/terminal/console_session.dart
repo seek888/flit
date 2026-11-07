@@ -2,6 +2,7 @@ import 'package:flit/l10n/strings.dart';
 
 import 'dart:async';
 import 'dart:convert' as convert;
+import 'dart:io';
 
 import 'package:flutter/material.dart' show ScrollController;
 import 'package:flutter/foundation.dart';
@@ -111,11 +112,36 @@ class ConsoleSession extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 把 POSIX 的单引号转成 cmd 能识别的双引号。
+  /// Flit 里所有参数都过 shQuote，桌面上要换成 "..."；内部双引号做转义。
+  static String _cmdQuotes(String command) {
+    return command.replaceAllMapped(RegExp(r"'([^']*)'"), (m) {
+      final inner = m.group(1)!.replaceAll('"', r'\"');
+      return '"$inner"';
+    });
+  }
+
   /// 桌面端命令归一化：把 Android 专属的 bash 包装剥掉。
   static String? _normalizeForDesktop(String? command) {
     if (command == null || !isDesktopPlatform) return command;
     var c = command.trimLeft();
     c = c.replaceFirst(RegExp(r'^bash\s+"[^"]*android_build\.sh"\s+'), '');
+
+    if (Platform.isWindows) {
+      // mkdir -p 'X' && cd 'X' && rest  →  cmd 的等价写法
+      final mk = RegExp(
+        r'''^mkdir\s+-p\s+'([^']*)'\s*&&\s*cd\s+'[^']*'\s*&&\s*(.+)$''',
+        dotAll: true,
+      ).firstMatch(c);
+      if (mk != null) {
+        final dir = mk.group(1)!;
+        final rest = _cmdQuotes(mk.group(2)!);
+        c = 'if not exist "$dir" mkdir "$dir" & cd /d "$dir" && $rest';
+      } else {
+        c = _cmdQuotes(c);
+      }
+      return c;
+    }
     c = c.replaceFirst(
       RegExp(
         r'''^if \[ -f "\$HOME/\.flit/env\.sh" \]; then \. "\$HOME/\.flit/env\.sh" \|\| exit \$\?; fi;\s*''',
