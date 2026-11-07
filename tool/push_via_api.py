@@ -142,18 +142,18 @@ def main() -> int:
     for status, old_path, new_path in entries:
         if status == "D":
             tree_entries.append(
-                {"path": old_path, "mode": "100644", "type": "file", "sha": None}
+                {"path": old_path, "mode": "100644", "type": "blob", "sha": None}
             )
             continue
         if status == "R":
             tree_entries.append(
-                {"path": old_path, "mode": "100755", "type": "file", "sha": None}
+                {"path": old_path, "mode": "100755", "type": "blob", "sha": None}
             )
         full = os.path.join(root, new_path)
         data = open(full, "rb").read()
         blob = api.call("POST", "/git/blobs", {"content": base64.b64encode(data).decode("ascii"), "encoding": "base64"})
         tree_entries.append(
-            {"path": new_path, "mode": file_mode(root, new_path), "type": "file", "sha": blob["sha"]}
+            {"path": new_path, "mode": file_mode(root, new_path), "type": "blob", "sha": blob["sha"]}
         )
         print(f"  blob {blob['sha'][:10]} {new_path}")
 
