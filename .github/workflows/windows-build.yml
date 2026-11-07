@@ -50,6 +50,26 @@ jobs:
       - name: Build Windows (release)
         run: flutter build windows --release
 
+      # Flutter Windows 程序依赖 MSVC 运行库；机器上没装 VC++ Redistributable
+      # 时会直接弹「找不到 msvcp140.dll」。把运行库一起打进包，解压即用。
+      - name: Bundle VC++ runtime DLLs
+        if: success()
+        shell: pwsh
+        run: |
+          $target = "build\windows\x64\runner\Release"
+          if (-not (Test-Path $target)) { throw "产物目录不存在" }
+          $names = @('msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','concrt140.dll')
+          $copied = 0
+          foreach ($n in $names) {
+            $src = "C:\Windows\System32\$n"
+            if (Test-Path $src) {
+              Copy-Item $src -Destination $target -Force
+              Write-Host "bundled $n"
+              $copied++
+            }
+          }
+          if ($copied -eq 0) { Write-Host "warning: 没有找到运行库，跳过" }
+
       - name: Package artifact
         if: success()
         shell: pwsh
