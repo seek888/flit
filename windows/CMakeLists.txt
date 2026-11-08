@@ -46,6 +46,10 @@ function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_features(${TARGET} PUBLIC cxx_std_17)
   target_compile_options(${TARGET} PRIVATE /W4 /WX /wd"4100")
   target_compile_options(${TARGET} PRIVATE /EHsc)
+  # 源码里有中文注释。MSVC 默认按系统代码页读取源文件：在 zh-CN（936）下会把
+  # UTF-8 注释读坏，触发 C4819（被 /WX 升级成错误），甚至把注释后面的代码
+  # 解析坏（表现为莫名其妙的“未声明的标识符”）。显式按 UTF-8 读写。
+  target_compile_options(${TARGET} PRIVATE /utf-8)
   target_compile_definitions(${TARGET} PRIVATE "_HAS_EXCEPTIONS=0")
   target_compile_definitions(${TARGET} PRIVATE "$<$<CONFIG:Debug>:_DEBUG>")
 endfunction()
