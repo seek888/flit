@@ -93,10 +93,16 @@ class DesktopComponentProbe {
 
   String get _exe => layout.windows ? '.exe' : '';
 
+  /// `platforms` 的目录名：允许调用方传 `36` 或 `android-36`。
+  static String _platformDir(String version) =>
+      version.startsWith('android-') ? version : 'android-$version';
+
   String get _bat => layout.windows ? '.bat' : '';
 
   String? _rootFor(String id, String version) => switch (id) {
-    'platforms' => layout.join(layout.platformsDir, 'android-$version'),
+    // platforms 的目录名本身就带 `android-` 前缀（`platforms/android-36`），
+    // 而扫描已装目录时拿到的 version 就是目录名，不能再拼一次。
+    'platforms' => layout.join(layout.platformsDir, _platformDir(version)),
     'build-tools' => layout.join(layout.buildToolsDir, version),
     'ndk' => layout.join(layout.ndkDir, version),
     'cmake' => layout.join(layout.cmakeDir, version),

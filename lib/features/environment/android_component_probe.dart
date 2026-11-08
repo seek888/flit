@@ -104,7 +104,7 @@ class AndroidComponentProbe {
   }
 
   String _root(AndroidComponent component) => switch (component.id) {
-    'platforms' => joinPath(sdkDir, 'platforms/android-${component.version}'),
+    'platforms' => joinPath(sdkDir, 'platforms/${_platformDir(component.version)}'),
     'build-tools' ||
     'ndk' ||
     'cmake' => joinPath(sdkDir, '${component.id}/${component.version}'),
@@ -112,6 +112,10 @@ class AndroidComponentProbe {
     'cmdline-tools' => joinPath(sdkDir, 'cmdline-tools/latest'),
     _ => '',
   };
+
+  /// `platforms` 的目录名：调用方可能传 `36`，也可能传扫描到的目录名 `android-36`。
+  static String _platformDir(String version) =>
+      version.startsWith('android-') ? version : 'android-$version';
 
   /// `source.properties` 里的 `Pkg.Revision`（脚本用 sed 取第一行）。
   String? _revision(String root) {

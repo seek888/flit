@@ -252,7 +252,7 @@ class DesktopSetupRunner {
   String? _componentDirectory(String id, String version) {
     switch (id) {
       case 'platforms':
-        return layout.join(layout.platformsDir, 'android-$version');
+        return layout.join(layout.platformsDir, _platformDir(version));
       case 'build-tools':
         return layout.join(layout.buildToolsDir, version);
       case 'ndk':
@@ -271,7 +271,7 @@ class DesktopSetupRunner {
   String _componentPath(String id, String version) {
     switch (id) {
       case 'platforms':
-        return 'android-sdk/platforms/android-$version';
+        return 'android-sdk/platforms/${_platformDir(version)}';
       case 'build-tools':
         return 'android-sdk/build-tools/$version';
       case 'ndk':
@@ -292,11 +292,16 @@ class DesktopSetupRunner {
       case 'build-tools':
         return version == DesktopToolchain.defaultBuildTools;
       case 'platforms':
-        return version == DesktopToolchain.defaultPlatformVersion;
+        return version.replaceFirst('android-', '') ==
+            DesktopToolchain.defaultPlatformVersion;
       default:
         return true;
     }
   }
+
+  /// `platforms` 的目录名：允许 `36` 或 `android-36` 两种写法。
+  static String _platformDir(String version) =>
+      version.startsWith('android-') ? version : 'android-$version';
 
   String? _installedDirectory(InstalledToolchain tool) {
     final segments = tool.path.split('/');
