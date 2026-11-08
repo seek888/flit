@@ -7,6 +7,7 @@ import '../controller/code_controller.dart';
 
 /// Single compact row sharing one surface with the terminal above.
 /// Run/build actions live in the app bar (EditorRunControls).
+/// [dense] 是桌面形态: 32 高、更紧的按钮, 与 Windows 状态栏/标签行同一密度。
 class EditorDockToolbar extends StatelessWidget {
   const EditorDockToolbar({
     super.key,
@@ -22,6 +23,7 @@ class EditorDockToolbar extends StatelessWidget {
     this.docPreviewOn = false,
     this.docPreviewLabel = 'MD',
     this.onDocPreview,
+    this.dense = false,
   });
 
   final CodeController controller;
@@ -33,6 +35,9 @@ class EditorDockToolbar extends StatelessWidget {
   final String docPreviewLabel;
   final VoidCallback? onDocPreview;
 
+  /// 桌面紧凑形态（32 高）
+  final bool dense;
+
   Widget _tab(String label, bool selected, VoidCallback action) => TextButton(
     onPressed: action,
     style: TextButton.styleFrom(
@@ -40,7 +45,7 @@ class EditorDockToolbar extends StatelessWidget {
       backgroundColor: selected
           ? AppColors.accent.withValues(alpha: .12)
           : Colors.transparent,
-      minimumSize: const Size(46, 36),
+      minimumSize: dense ? const Size(40, 26) : const Size(46, 36),
       padding: const EdgeInsets.symmetric(horizontal: 10),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -56,7 +61,7 @@ class EditorDockToolbar extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8),
           child: SizedBox(
-            height: 44,
+            height: dense ? 32 : 44,
             child: Row(
               children: [
                 _tab(

@@ -1,8 +1,11 @@
 import 'package:flit/l10n/strings.dart';
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import '../../../core/desktop/desktop_presentation.dart';
+import 'package:flutter/services.dart';
 import '../../../core/theme.dart';
 import '../controller/code_controller.dart';
 import '../lsp/lsp_client.dart';
@@ -258,25 +261,14 @@ class CodeFieldState extends State<CodeField> {
       );
     }
     if (!mounted || !current()) return;
-    showModalBottomSheet<void>(
+    showAdaptiveSheet<void>(
       context: context,
-      backgroundColor: AppColors.surface,
-      builder: (ctx) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-          children: [
-            const SheetHandle(),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text(
-                context.strings.linePPIssues(line + 1, diags.length),
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: AppColors.textSecondary,
-                ),
-              ),
-            ),
+      title: context.strings.linePPIssues(line + 1, diags.length),
+      width: 520,
+      builder: (ctx) => ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.all(16),
+        children: [
             for (final d in diags)
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
@@ -330,8 +322,7 @@ class CodeFieldState extends State<CodeField> {
                   },
                 ),
             ],
-          ],
-        ),
+        ],
       ),
     );
   }
@@ -378,6 +369,19 @@ class CodeFieldState extends State<CodeField> {
     return lo - 1;
   }
 
+  /// Shift+滚轮 = 横向滚动(长行模式)。纵向 Scrollable 已被
+  /// [EditorWheelScrollPhysics] 在 Shift 按下时回绝, 这里抢到信号后自己滚。
+  void _onHorizontalWheel(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    if (!HardwareKeyboard.instance.isShiftPressed) return;
+    final delta = event.scrollDelta.dy;
+    if (delta == 0 || !_hScroll.hasClients) return;
+    GestureBinding.instance.pointerSignalResolver.register(event, (_) {
+      final max = _hScroll.position.maxScrollExtent;
+      _hScroll.jumpTo((_hScroll.offset + delta).clamp(0.0, max).toDouble());
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final style = TextStyle(
@@ -387,6 +391,11 @@ class CodeFieldState extends State<CodeField> {
       color: CodeTheme.current.plain,
     );
     final theme = CodeTheme.current;
+    // 给两级滚动都装上「修饰键闸门」: Ctrl/Shift 按住时不接受滚动,
+    // 让放大(外层 CtrlWheelZoom)与横向滚动(本组件)拿到 pointer signal。
+    final wheelPhysics = EditorWheelScrollPhysics(
+      parent: ScrollConfiguration.of(context).getScrollPhysics(context),
+    );
     return ColoredBox(
       color: theme.background,
       child: Row(
@@ -427,6 +436,7 @@ class CodeFieldState extends State<CodeField> {
                         key: _fieldKey,
                         controller: widget.controller,
                         scrollController: _scroll,
+                        scrollPhysics: wheelPhysics,
                         focusNode: widget.focusNode,
                         maxLines: null,
                         expands: true,
@@ -491,7 +501,14 @@ class CodeFieldState extends State<CodeField> {
                 return SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   controller: _hScroll,
-                  child: SizedBox(width: width, child: content),
+                  physics: wheelPhysics,
+                  child: SizedBox(
+                    width: width,
+                    child: Listener(
+                      onPointerSignal: _onHorizontalWheel,
+                      child: content,
+                    ),
+                  ),
                 );
               },
             ),
@@ -696,4 +713,25 @@ class _InlineDiagnostics extends CustomPainter {
 
   @override
   bool shouldRepaint(_InlineDiagnostics oldDelegate) => true;
+}
+
+/// 滚轮修饰键闸门: 按住 Ctrl(缩放)或 Shift(横向滚动)时不接受滚动偏移。
+///
+/// Scrollable 收到 PointerScrollEvent 会先问 [shouldAcceptUserOffset]；返回
+/// false 就不注册 pointer signal resolver，外层 [CtrlWheelZoom] 与本组件的
+/// 横向 Listener 才能拿到事件——否则内层 Scrollable 先注册，Ctrl+滚轮会被
+/// 「滚一屏」吃掉。
+class EditorWheelScrollPhysics extends ScrollPhysics {
+  const EditorWheelScrollPhysics({super.parent});
+
+  @override
+  EditorWheelScrollPhysics applyTo(ScrollPhysics? ancestor) =>
+      EditorWheelScrollPhysics(parent: buildParent(ancestor));
+
+  @override
+  bool shouldAcceptUserOffset(ScrollMetrics position) {
+    final keyboard = HardwareKeyboard.instance;
+    if (keyboard.isControlPressed || keyboard.isShiftPressed) return false;
+    return super.shouldAcceptUserOffset(position);
+  }
 }

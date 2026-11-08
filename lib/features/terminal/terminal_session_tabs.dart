@@ -2,6 +2,8 @@ import 'package:flit/l10n/strings.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/theme.dart';
+import '../../services/shell.dart';
+import 'console_session.dart';
 import 'run_sessions.dart';
 
 class TerminalSessionTabs extends StatelessWidget {
@@ -35,14 +37,15 @@ class TerminalSessionTabs extends StatelessWidget {
                 InkWell(
                   canRequestFocus: false,
                   borderRadius: BorderRadius.circular(6),
+                  hoverColor: AppColors.hover,
                   onTap: () => executions.select(id),
-                  // 全部 chip 统一 30 高: bash(无✕) 与运行会话(带✕)同高居中
+                  // 桌面 25 高更紧凑；手机保持 30 的触达高度
                   child: Container(
-                    height: 30,
+                    height: isDesktopPlatform ? 25 : 30,
                     padding: const EdgeInsets.symmetric(horizontal: 10),
                     alignment: Alignment.center,
                     child: Text(
-                      title,
+                      terminalDisplayTitle(title),
                       style: TextStyle(fontSize: 11, color: color),
                     ),
                   ),
@@ -79,7 +82,8 @@ class TerminalSessionTabs extends StatelessWidget {
           scrollDirection: Axis.horizontal,
           child: Row(
             children: [
-              tab(null, 'bash'),
+              // 桌面显示 cmd、手机显示 bash（见 defaultShellTitle）
+              tab(null, defaultShellTitle),
               for (final run in executions.all)
                 tab(run.id, run.title, closable: true),
             ],

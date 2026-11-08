@@ -2,10 +2,19 @@ import 'package:flit/l10n/strings.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/breakpoints.dart';
+import '../../core/desktop/app_commands.dart';
+import '../../core/desktop/window_frame.dart';
+import '../../core/host_platform.dart';
 import '../../core/theme.dart';
 import '../../services/paths.dart';
+import '../settings/appearance_preferences.dart';
+import 'widgets/desktop_sidebar.dart';
+import 'widgets/desktop_status_bar.dart';
+import 'widgets/desktop_toolbar.dart';
 import 'controller/code_controller.dart';
 import 'file_kind.dart';
 import 'widgets/editor_dock_toolbar.dart';
@@ -81,6 +90,12 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
   final _editorFocus = FocusNode();
   bool _loadingFile = false;
 
+  /// 宽屏永久侧栏当前页签（文件 / 版本控制）。
+  DesktopSidebarTab _sidebarTab = DesktopSidebarTab.files;
+
+  /// 桌面端注册过的全局命令（dispose 时按名单注销，避免误删别的页面注册的命令）。
+  final Set<AppCommand> _registeredCommands = <AppCommand>{};
+
   /// 可渲染文档的预览开关; 换 tab/换文件即复位
   bool _docPreview = false;
   int _fileSeq = 0;
@@ -102,6 +117,53 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
     if (_tabs.isEmpty) unawaited(_openFileByPath('lib/main.dart'));
     _editorFocus.addListener(_onFocusChanged);
     unawaited(_project.activate());
+    _registerDesktopWorkbench();
+  }
+
+  /// 桌面端：把本页能做的事注册到全局命令表，并接管关窗保存与窗口标题。
+  /// 手机端不注册（没有菜单/快捷键消费方），行为保持原样。
+  void _registerDesktopWorkbench() {
+    if (!isDesktopPlatform) return;
+    final commands = context.read<AppCommands>();
+    void bind(AppCommand command, VoidCallback handler) {
+      commands.register(command, handler);
+      _registeredCommands.add(command);
+    }
+
+    bind(AppCommand.save, () => unawaited(_save()));
+    bind(AppCommand.saveAll, () => unawaited(_save(silent: true)));
+    bind(AppCommand.closeTab, () {
+      final current = _current;
+      if (current != null) unawaited(_closeTab(current));
+    });
+    bind(AppCommand.closeOtherTabs, () {
+      final current = _current;
+      if (current != null) unawaited(_closeOthers(current));
+    });
+    bind(AppCommand.closeAllTabs, () => unawaited(_closeAllTabs()));
+    bind(AppCommand.closeProject, () => unawaited(_closeProject()));
+    bind(AppCommand.toggleTerminal, _toggleTerminal);
+    bind(AppCommand.toggleSidebar, _layout.toggleSidebar);
+    bind(AppCommand.zoomIn, () => unawaited(_zoomEditor(1)));
+    bind(AppCommand.zoomOut, () => unawaited(_zoomEditor(-1)));
+    bind(AppCommand.resetZoom, () => unawaited(_resetZoom()));
+    bind(AppCommand.nextTab, () => _cycleTab(1));
+    bind(AppCommand.previousTab, () => _cycleTab(-1));
+    bind(AppCommand.refresh, () => unawaited(_refreshFiles()));
+    // 点窗口 X 时先落盘（window_frame 的关窗流程会 await 它，3 秒超时）。
+    commands.setBeforeClose(_flushSave);
+    unawaited(setDesktopWindowTitle('${widget.projectName} — Flit'));
+  }
+
+  void _unregisterDesktopWorkbench() {
+    if (!isDesktopPlatform) return;
+    final commands = context.read<AppCommands>();
+    for (final command in _registeredCommands) {
+      commands.unregister(command);
+    }
+    _registeredCommands.clear();
+    commands.setBeforeClose(null);
+    unawaited(setDesktopWindowTitle('Flit'));
   }
 
   @override
@@ -350,6 +412,7 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _unregisterDesktopWorkbench();
     WidgetsBinding.instance.removeObserver(this);
     _editorFocus.removeListener(_onFocusChanged);
     _project.git.removeListener(_onGitChanged);
@@ -389,7 +452,17 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) _flushSave(); // 防抖中的内容在返回时落盘(后台完成)
       },
-      child: Scaffold(
+      child: isDesktopPlatform && useDesktopDock(context)
+          ? _desktopWorkbench(
+              context,
+              layout: layout,
+              tabs: tabs,
+              web: web,
+              runTarget: runTarget,
+              busy: busy,
+              editing: editing,
+            )
+          : Scaffold(
         key: _scaffoldKey,
         backgroundColor: AppColors.bg,
         appBar: AppBar(
@@ -576,6 +649,314 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
       );
     },
   );
+
+  // ---------- 桌面工作台（宽屏） ----------
+
+  /// 宽屏桌面形态：44px 工具条 + 永久侧栏 + 编辑/终端区 + 22px 状态栏。
+  /// 手机（窄屏）继续走上面的 AppBar + Drawer 布局，两者共享同一份工程状态。
+  Widget _desktopWorkbench(
+    BuildContext context, {
+    required WorkbenchLayout layout,
+    required EditorTabs tabs,
+    required WebRunController web,
+    required String? runTarget,
+    required bool busy,
+    required bool editing,
+  }) {
+    final documents = _project.documents;
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.escape): _handleEscape,
+      },
+      child: Scaffold(
+        backgroundColor: AppColors.bg,
+        body: Column(
+          children: [
+            DesktopToolbar(
+              projectName: widget.projectName,
+              subtitle: _saveStatusText(),
+              sidebarVisible: layout.sidebarVisible,
+              onToggleSidebar: layout.toggleSidebar,
+              runControls: const EditorRunControls(),
+              saveFailed: documents.saveFailed,
+            ),
+            if (tabs.items.isNotEmpty)
+              SizedBox(
+                height: EditorFileTabs.height,
+                child: EditorFileTabs(
+                  desktop: true,
+                  trailing: _current is CodeTab
+                      ? EditorAnalysisStatus(
+                          controller: _codeCtrl,
+                          focusNode: _editorFocus,
+                        )
+                      : null,
+                  onSelect: _selectTab,
+                  onClose: _closeTab,
+                  onCloseOthers: _closeOthers,
+                  onCloseAll: _closeAllTabs,
+                ),
+              ),
+            Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (layout.sidebarVisible) ...[
+                    DesktopSidebar(
+                      width: layout.sidebarWidth,
+                      tab: _sidebarTab,
+                      onTabChanged: (tab) => setState(() => _sidebarTab = tab),
+                      onResize: layout.resizeSidebar,
+                      files: FileTreeDrawer(
+                        asContent: true,
+                        onOpenFile: _openFileByPath,
+                      ),
+                      versionControl: const GitPanel(),
+                      onSettings: _openSettingsPage,
+                      onCloseProject: _closeProject,
+                    ),
+                    const VerticalDivider(width: 1, color: AppColors.border),
+                  ],
+                  Expanded(
+                    child: _desktopTerminal(
+                      context,
+                      web: web,
+                      runTarget: runTarget,
+                      busy: busy,
+                      editing: editing,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            DesktopStatusBar(
+              line: _caretPosition.$1,
+              column: _caretPosition.$2,
+              language: _languageLabel,
+              saveLabel: _saveStatusText(),
+              diagnostics: _codeCtrl.diagnostics.length,
+              terminalExpanded: layout.terminalExpanded && !editing,
+              onToggleTerminal: _toggleTerminal,
+              saveFailed: documents.saveFailed,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 桌面端编辑区 + 终端停靠（终端高度可拖，终端内容与会话条沿用 TerminalHost）。
+  Widget _desktopTerminal(
+    BuildContext context, {
+    required WebRunController web,
+    required String? runTarget,
+    required bool busy,
+    required bool editing,
+  }) {
+    final editorColumn = Stack(
+      children: [
+        Positioned.fill(child: _desktopCurrentView()),
+        if (_loadingFile)
+          const Positioned.fill(
+            child: ColoredBox(
+              color: AppColors.bg,
+              child: Center(child: CircularProgressIndicator()),
+            ),
+          ),
+      ],
+    );
+    final content = WorkspaceViews(
+      key: _viewsKey,
+      code: editorColumn,
+      preview: const WebRunPreview(),
+      showPreview: _layout.showPreview,
+      hasPreview: web.state != WebRunState.idle,
+    );
+    return TerminalHost(
+      expanded: _layout.terminalExpanded && !editing && !_docPreview,
+      onToggle: _toggleTerminal,
+      footer: EditorDockToolbar(
+        controller: _codeCtrl,
+        previewAvailable: runTarget == 'web' || web.state != WebRunState.idle,
+        showPreview: _layout.showPreview,
+        terminalExpanded: _layout.terminalExpanded && !editing,
+        docPreviewAvailable: _previewableOpen,
+        docPreviewOn: _docPreview,
+        docPreviewLabel: _docPreviewFormat == 'svg' ? 'SVG' : 'MD',
+        onDocPreview: () => setState(() => _docPreview = !_docPreview),
+        canEdit:
+            !_layout.showPreview && !_docPreview && _current is CodeTab,
+        onCode: () {
+          setState(() => _docPreview = false);
+          _layout.selectView(preview: false);
+        },
+        onPreview: () => _layout.selectView(preview: true),
+        onTerminal: _toggleTerminal,
+        dense: true,
+      ),
+      running: busy,
+      preferredHeight: 280,
+      session: _executions.console,
+      sessionsBar: const TerminalSessionTabs(),
+      child: content,
+    );
+  }
+
+  Widget _desktopCurrentView() {
+    final current = _current;
+    if (current == null) return _emptyHint();
+    if (current is CodeTab) {
+      final document = current.document;
+      switch ((_previewableOpen, _docPreview, _docPreviewFormat)) {
+        case (true, true, 'svg'):
+          return SvgPreview(
+            key: const ValueKey('svg-preview'),
+            controller: document.controller,
+          );
+        case (true, true, _):
+          return MarkdownPreview(
+            key: ValueKey('md:${_currentPath()}'),
+            controller: document.controller,
+            projectRoot: widget.projectPath,
+          );
+        default:
+          return EditorSurface(
+            key: ValueKey(_currentPath()),
+            controller: document.controller,
+            path: _currentPath()!,
+            focusNode: _editorFocus,
+          );
+      }
+    }
+    if (current is FileTab) {
+      return FileCard(
+        key: ValueKey('file:${current.path}'),
+        projectRoot: widget.projectPath,
+        path: current.path,
+        kind: current.kind,
+      );
+    }
+    return _emptyHint();
+  }
+
+  // ---------- 桌面交互辅助 ----------
+
+  String _saveStatusText() {
+    final documents = _project.documents;
+    if (documents.saveFailed) {
+      return documents.conflictPath != null
+          ? context.strings.fileChangedTapToResolve
+          : context.strings.saveFailedTapToRetry;
+    }
+    if (documents.saving) return context.strings.saving;
+    if (documents.dirty) return context.strings.unsaved;
+    return context.strings.saved;
+  }
+
+  /// 光标行列（1 基），供状态栏显示 Ln/Col。
+  (int, int) get _caretPosition {
+    final controller = _codeCtrl;
+    final text = controller.text;
+    final selection = controller.selection;
+    var offset = selection.isValid ? selection.baseOffset : 0;
+    if (offset < 0) offset = 0;
+    if (offset > text.length) offset = text.length;
+    final before = text.substring(0, offset);
+    final line = '\n'.allMatches(before).length + 1;
+    final column = offset - before.lastIndexOf('\n');
+    return (line, column);
+  }
+
+  String get _languageLabel {
+    final path = _openFile;
+    if (path == null) return 'Plain Text';
+    final dot = path.lastIndexOf('.');
+    final extension = dot < 0 ? '' : path.substring(dot + 1).toLowerCase();
+    return switch (extension) {
+      'dart' => 'Dart',
+      'json' => 'JSON',
+      'yaml' || 'yml' => 'YAML',
+      'md' => 'Markdown',
+      'svg' => 'SVG',
+      'xml' => 'XML',
+      'html' => 'HTML',
+      'css' => 'CSS',
+      'js' => 'JavaScript',
+      'ts' => 'TypeScript',
+      'sh' || 'bash' => 'Shell',
+      'gradle' => 'Gradle',
+      'kt' => 'Kotlin',
+      'java' => 'Java',
+      'toml' => 'TOML',
+      '' => 'Plain Text',
+      _ => extension.toUpperCase(),
+    };
+  }
+
+  Future<void> _zoomEditor(double delta) async {
+    final preferences = context.read<AppearancePreferences>();
+    final next = (preferences.editorSize + delta).clamp(
+      AppearancePreferences.editorMinSize,
+      AppearancePreferences.editorMaxSize,
+    );
+    if (next == preferences.editorSize) return;
+    await preferences.update(editor: next);
+  }
+
+  Future<void> _resetZoom() =>
+      context.read<AppearancePreferences>().update(editor: 14);
+
+  void _cycleTab(int delta) {
+    final items = _tabs.items;
+    if (items.isEmpty) return;
+    final index = _current == null ? -1 : items.indexOf(_current!);
+    if (index < 0) return;
+    final next = items[(index + delta + items.length) % items.length];
+    unawaited(_selectTab(next));
+  }
+
+  Future<void> _closeAllTabs() async {
+    if (_project.documents.synchronizing) {
+      _showMessage(context.strings.aFileOperationIsInProgressWait);
+      return;
+    }
+    for (final item in List<OpenItem>.of(_tabs.items)) {
+      if (!mounted) return;
+      if (item is CodeTab) {
+        try {
+          await _project.documents.closeDocument(item.document);
+        } catch (error) {
+          _showMessage(error is StateError ? error.message : '$error');
+          break;
+        }
+      } else {
+        _tabs.close(item);
+      }
+    }
+  }
+
+  Future<void> _openSettingsPage() async {
+    if (!await _save(silent: true)) return;
+    if (!mounted) return;
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const SettingsPage()));
+  }
+
+  /// Esc：先退预览，再退文档预览，最后收起终端（与 Windows IDE 的 Esc 语义一致）。
+  void _handleEscape() {
+    if (_layout.showPreview) {
+      _layout.selectView(preview: false);
+      return;
+    }
+    if (_docPreview) {
+      setState(() => _docPreview = false);
+      return;
+    }
+    if (_layout.terminalExpanded && !_editorFocus.hasFocus) {
+      _toggleTerminal();
+    }
+  }
 
   Widget _drawer() => Drawer(
     backgroundColor: AppColors.bg,

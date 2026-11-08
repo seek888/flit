@@ -35,6 +35,10 @@ class DesktopToolchain {
            ToolchainLayout(home: home ?? ToolchainLayout.defaultHome()),
        _installer = installer;
 
+  /// 进程级共享实例：窗口几何/原生文件选择器只需要目录布局，
+  /// 不持有任何有状态资源，可安全复用。
+  static final DesktopToolchain instance = DesktopToolchain();
+
   final ToolchainLayout layout;
 
   ToolchainInstaller? _installer;

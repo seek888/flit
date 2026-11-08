@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:xterm/xterm.dart';
+import '../../core/desktop/desktop_presentation.dart';
+import '../../core/desktop/desktop_zoom.dart';
 import '../../core/theme.dart';
 import '../../core/workbench_controls.dart';
 
@@ -99,42 +101,26 @@ class _GlobalTerminalPanelState extends State<GlobalTerminalPanel> {
     }
   }
 
+  /// Ctrl+滚轮：按 0.5px 步进改字号并立即落盘（与双指缩放共用同一份偏好）。
+  Future<void> _wheelZoom(double delta) async {
+    final preferences = context.read<AppearancePreferences?>();
+    if (preferences == null) return;
+    final next = (preferences.terminalSize + delta * 0.5).clamp(
+      AppearancePreferences.terminalMinSize,
+      AppearancePreferences.terminalMaxSize,
+    );
+    if (next == preferences.terminalSize) return;
+    await preferences.update(terminal: next);
+  }
+
   void _appearance() {
     FocusManager.instance.primaryFocus?.unfocus();
-    showModalBottomSheet<void>(
+    // 桌面端：居中的外观对话框；手机端仍是底部抽屉（由 showAdaptiveSheet 分流）。
+    showAdaptiveSheet<void>(
       context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (context) => FractionallySizedBox(
-        heightFactor: .85,
-        child: SafeArea(
-          top: false,
-          child: Column(
-            children: [
-              const SheetHandle(),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
-                child: Row(
-                  children: [
-                    Expanded(child: Text(context.strings.terminalAppearance)),
-                    IconButton(
-                      tooltip: context.strings.closeTerminalSettings,
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close),
-                    ),
-                  ],
-                ),
-              ),
-              const Expanded(
-                child: SingleChildScrollView(
-                  padding: EdgeInsets.all(16),
-                  child: TerminalAppearanceSettings(),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+      title: context.strings.terminalAppearance,
+      width: 420,
+      builder: (_) => const TerminalAppearanceSettings(),
     );
   }
 
@@ -286,7 +272,7 @@ class _GlobalTerminalPanelState extends State<GlobalTerminalPanel> {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                '${_session.title} · ${_session.alive
+                '${terminalDisplayTitle(_session.title)} · ${_session.alive
                     ? context.strings.running
                     : _session.exitCode == null
                     ? context.strings.ready
@@ -376,12 +362,16 @@ class _GlobalTerminalPanelState extends State<GlobalTerminalPanel> {
                         2,
               );
               if (preferences == null) return view;
-              return PinchZoom(
-                // 终端按行排版, 焦点锚定交给终端视图的滚动; 这里只取比例。
-                onStart: (_) => _zoomStart(),
-                onScale: (scale, _) => _zoom(scale),
-                onEnd: () => unawaited(_saveZoom()),
-                child: view,
+              return CtrlWheelZoom(
+                // 桌面快捷路径：Ctrl+滚轮直接改字号并落盘；双指路径保留给手机。
+                onZoom: (delta) => unawaited(_wheelZoom(delta)),
+                child: PinchZoom(
+                  // 终端按行排版, 焦点锚定交给终端视图的滚动; 这里只取比例。
+                  onStart: (_) => _zoomStart(),
+                  onScale: (scale, _) => _zoom(scale),
+                  onEnd: () => unawaited(_saveZoom()),
+                  child: view,
+                ),
               );
             },
           ),

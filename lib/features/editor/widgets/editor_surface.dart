@@ -1,10 +1,13 @@
 import 'package:flit/l10n/strings.dart';
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../../../core/desktop/desktop_zoom.dart';
+import '../../../core/host_platform.dart';
 import '../../../core/theme.dart';
 import '../../../core/pinch_zoom.dart';
 import '../../settings/appearance_preferences.dart';
@@ -44,6 +47,22 @@ class _EditorSurfaceState extends State<EditorSurface> {
   double? _zoomSize;
   double _zoomStartSize = 14;
   int _zoomGeneration = 0;
+  bool _focused = false;
+
+  /// Ctrl+滚轮: 每次 ±1px, 直接写回偏好, 编辑器字号/行高/补全弹窗一起跟随。
+  void _wheelZoom(double delta) {
+    final preferences = context.read<AppearancePreferences>();
+    final next = stepZoom(
+      _zoomSize ?? preferences.editorSize,
+      delta,
+      min: AppearancePreferences.editorMinSize,
+      max: AppearancePreferences.editorMaxSize,
+    );
+    if (next == null) return;
+    _dismissSuggestions();
+    setState(() => _zoomSize = null);
+    unawaited(preferences.update(editor: next));
+  }
 
   void _zoomStart(Offset focal) {
     _zoomGeneration++;
@@ -114,7 +133,12 @@ class _EditorSurfaceState extends State<EditorSurface> {
     super.dispose();
   }
 
-  void _onFocusChanged() => _intelligence.setFocused(_editorFocus.hasFocus);
+  void _onFocusChanged() {
+    final focused = _editorFocus.hasFocus;
+    _intelligence.setFocused(focused);
+    if (focused != _focused && mounted) setState(() => _focused = focused);
+  }
+
   void _dismissSuggestions() => _intelligence.dismiss();
 
   Future<void> _applyCompletion(CompletionItem item) async {
@@ -131,17 +155,19 @@ class _EditorSurfaceState extends State<EditorSurface> {
     }
   }
 
-  /// 桌面式补全浮层的定位: 锚定光标, 优先显示在光标上方, 放不下落到下方
+  /// 桌面式补全浮层的定位: 锚定光标, 优先显示在光标上方, 放不下落到下方。
+  /// [fontSize] 跟随编辑器字号, 行高与宽度同步放大, 缩放后候选面板不脱节。
   Positioned? _buildCompletionPopup(
     BuildContext context,
     BoxConstraints constraints,
+    double fontSize,
   ) {
     final caret = _caretRect;
     if (caret == null || _intelligence.suggestions.isEmpty) return null;
     final box = context.findRenderObject() as RenderBox?;
     if (box == null || !box.attached) return null;
-    const rowHeight = 40.0;
-    const width = 300.0;
+    final rowHeight = CompletionPopup.rowHeightFor(fontSize);
+    final width = math.max(300.0, fontSize * 23.0);
     final h = _intelligence.suggestions.length.clamp(1, 5) * rowHeight;
     final topLeft = box.globalToLocal(caret.topLeft);
     final left = (topLeft.dx - 12).clamp(
@@ -163,6 +189,8 @@ class _EditorSurfaceState extends State<EditorSurface> {
         selectedIndex: _intelligence.selected,
         onSelected: _applyCompletion,
         onDismiss: _dismissSuggestions,
+        fontSize: fontSize,
+        width: width,
       ),
     );
   }
@@ -230,6 +258,11 @@ class _EditorSurfaceState extends State<EditorSurface> {
   @override
   Widget build(BuildContext context) {
     final preferences = context.watch<AppearancePreferences>();
+    // 补全弹窗跟随编辑器字号, 但夹在可读区间, 避免 48px 时候选面板占满半屏。
+    final popupFontSize = preferences.editorSize.clamp(12.0, 18.0);
+    final focusBorder = _focused && isDesktopPlatform
+        ? Border.all(color: AppColors.accent, width: 1)
+        : null;
     return ListenableBuilder(
       listenable: _intelligence,
       builder: (context, _) => Focus(
@@ -242,29 +275,39 @@ class _EditorSurfaceState extends State<EditorSurface> {
                   clipBehavior: Clip.none,
                   children: [
                     Positioned.fill(
-                      child: PinchZoom(
-                        onStart: _zoomStart,
-                        onScale: _zoom,
-                        onEnd: () => unawaited(_saveZoom()),
-                        child: CodeField(
-                          key: _codeFieldKey,
-                          controller: _codeCtrl,
-                          focusNode: _editorFocus,
-                          language: _language,
-                          filePath: widget.path,
-                          scrollController: _codeScroll,
-                          horizontalScrollController: _codeHScroll,
-                          onCaretChanged: (rect) {
-                            if (mounted && rect != _caretRect) {
-                              setState(() => _caretRect = rect);
-                            }
-                          },
-                          fontSize: _zoomSize ?? preferences.editorSize,
-                          wrap: preferences.editorWrap,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(border: focusBorder),
+                        child: PinchZoom(
+                          onStart: _zoomStart,
+                          onScale: _zoom,
+                          onEnd: () => unawaited(_saveZoom()),
+                          child: CtrlWheelZoom(
+                            onZoom: _wheelZoom,
+                            child: CodeField(
+                              key: _codeFieldKey,
+                              controller: _codeCtrl,
+                              focusNode: _editorFocus,
+                              language: _language,
+                              filePath: widget.path,
+                              scrollController: _codeScroll,
+                              horizontalScrollController: _codeHScroll,
+                              onCaretChanged: (rect) {
+                                if (mounted && rect != _caretRect) {
+                                  setState(() => _caretRect = rect);
+                                }
+                              },
+                              fontSize: _zoomSize ?? preferences.editorSize,
+                              wrap: preferences.editorWrap,
+                            ),
+                          ),
                         ),
                       ),
                     ),
-                    if (_buildCompletionPopup(context, constraints)
+                    if (_buildCompletionPopup(
+                          context,
+                          constraints,
+                          popupFontSize,
+                        )
                         case final popup?)
                       popup,
                   ],

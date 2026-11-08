@@ -5,10 +5,13 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/desktop/app_commands.dart';
 import '../../core/theme.dart';
 import '../../core/page_layout.dart';
+import '../../l10n/desktop_strings.dart';
 
 import '../../services/desktop_toolchain.dart';
+import '../../services/native_file_service.dart';
 import '../../services/paths.dart';
 import '../../services/shell.dart';
 import '../workspace/project_session.dart';
@@ -16,6 +19,7 @@ import '../terminal/console_session.dart';
 import '../terminal/terminal_host.dart';
 import 'clone_project_page.dart';
 import 'create_project_page.dart';
+import 'desktop_projects_view.dart';
 import 'project_list.dart';
 
 /// 主页 = 工程列表(Android Studio 欢迎页的手机版): 工程根 $HOME/projects 下
@@ -53,10 +57,42 @@ class _ProjectsPageState extends State<ProjectsPage> {
   String? _projectsRoot;
   ProjectList? _projects;
 
+  /// 桌面菜单/快捷键注册（Android 没有菜单，不注册）。
+  AppCommands? _commands;
+  final _registeredCommands = <AppCommand>[];
+
   @override
   void initState() {
     super.initState();
+    _registerDesktopCommands();
     unawaited(_init());
+  }
+
+  /// 工程列表页是桌面的主页面：文件菜单、View 菜单和快捷键都指向这里的动作。
+  /// 只注册自己负责的命令，退出页面时按名注销，避免清空编辑器的注册表。
+  void _registerDesktopCommands() {
+    if (!isDesktopPlatform) return;
+    final AppCommands commands;
+    try {
+      commands = context.read<AppCommands>();
+    } catch (_) {
+      return; // 组件单测直接挂页面、没有 AppScope 时静默跳过
+    }
+    _commands = commands;
+    void bind(AppCommand command, VoidCallback handler) {
+      commands.register(command, handler);
+      _registeredCommands.add(command);
+    }
+
+    bind(AppCommand.newProject, _createProject);
+    bind(AppCommand.openProject, _openProjectFromFolder);
+    bind(AppCommand.importProject, _importFolder);
+    bind(AppCommand.openSettings, widget.onOpenSettings);
+    bind(AppCommand.openEnvironment, widget.onOpenEnvironment);
+    bind(
+      AppCommand.refresh,
+      () => unawaited(_projects?.refresh() ?? Future<void>.value()),
+    );
   }
 
   Future<void> _init() async {
@@ -107,6 +143,12 @@ class _ProjectsPageState extends State<ProjectsPage> {
 
   @override
   void dispose() {
+    final commands = _commands;
+    if (commands != null) {
+      for (final command in _registeredCommands) {
+        commands.unregister(command);
+      }
+    }
     unawaited(_task?.close());
     _projects?.dispose();
     super.dispose();
@@ -199,6 +241,35 @@ class _ProjectsPageState extends State<ProjectsPage> {
     return false;
   }
 
+  /// 导入已有工程：原生文件夹选择器选中的目录直接作为工作区打开（不复制文件）。
+  Future<void> _importFolder() async {
+    if (_busy || !_requireEnvironment()) return;
+    final path = await NativeFileService.pickDirectory(
+      initialDirectory: _projectsRoot,
+      title: desktopStrings(context).importProject,
+    );
+    if (path == null || !mounted) return;
+    widget.onOpenProject(path);
+    unawaited(_projects?.refresh());
+  }
+
+  /// 打开工程：与导入一致，桌面用系统选择器定位任意位置的工程。
+  Future<void> _openProjectFromFolder() async {
+    if (_busy || !_requireEnvironment()) return;
+    final path = await NativeFileService.pickProjectDirectory();
+    if (path == null || !mounted) return;
+    widget.onOpenProject(path);
+    unawaited(_projects?.refresh());
+  }
+
+  /// 在资源管理器中打开工程根目录。
+  Future<void> _openProjectsFolder() async {
+    final root = _projectsRoot;
+    if (root == null) return;
+    final opened = await NativeFileService.openFolder(root);
+    if (!opened && mounted) _snack(root);
+  }
+
   Future<void> _createProject() async {
     final root = _projectsRoot;
     if (_busy || root == null || !_requireEnvironment()) return;
@@ -269,14 +340,20 @@ class _ProjectsPageState extends State<ProjectsPage> {
     );
     if (params == null || !mounted) return;
 
+    final cloneTarget = joinPath(params.targetDir, params.dirName);
+    // 桌面端允许把仓库克隆到工程根以外；那种情况下列表刷新看不到，直接打开。
+    final outsideRoot = !samePath(params.targetDir, root);
     setState(() {
       _busy = true;
       _termExpanded = true;
       _pendingName = params.dirName;
-      _pendingProjectPath = null;
+      _pendingProjectPath = cloneTarget;
       _pendingMarker = 'clone';
     });
-    await _runTask(buildGitCloneCommand(params), openOnSuccess: false);
+    await _runTask(
+      buildGitCloneCommand(params),
+      openOnSuccess: isDesktopPlatform && outsideRoot,
+    );
   }
 
   Future<void> _runTask(
@@ -359,8 +436,40 @@ class _ProjectsPageState extends State<ProjectsPage> {
 
   // ---------- 视图 ----------
 
+  /// 桌面工作台主页面：工具条 + 工程表；手机端仍走下面的卡片列表。
+  Widget _desktopScaffold() {
+    final ready = _projects != null && !_busy;
+    return Scaffold(
+      body: TerminalHost(
+        session: _task,
+        expanded: _termExpanded,
+        running: _busy,
+        onToggle: () => setState(() => _termExpanded = !_termExpanded),
+        child: DesktopProjectsView(
+          projects: _projects,
+          projectsRoot: _projectsRoot,
+          environmentReady: widget.environmentReady,
+          environmentChecking: widget.environmentChecking,
+          busy: _busy,
+          onOpenProject: widget.onOpenProject,
+          onCreateProject: ready ? () => unawaited(_createProject()) : null,
+          onCloneProject: ready ? () => unawaited(_cloneProject()) : null,
+          onImportFolder: ready ? () => unawaited(_importFolder()) : null,
+          onOpenFolder: ready ? () => unawaited(_openProjectsFolder()) : null,
+          onOpenEnvironment: widget.onOpenEnvironment,
+          onOpenSettings: widget.onOpenSettings,
+          onRefresh: () =>
+              unawaited(_projects?.refresh() ?? Future<void>.value()),
+          onRename: (entry) => unawaited(_renameProject(entry)),
+          onDelete: (entry) => unawaited(_deleteProject(entry)),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (isDesktopPlatform) return _desktopScaffold();
     final ready = _projects != null && !_busy;
     return Scaffold(
       appBar: AppBar(

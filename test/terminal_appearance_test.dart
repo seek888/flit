@@ -222,7 +222,7 @@ void main() {
       expect(preferences.terminalFont, 'JetBrainsMono');
       expect(preferences.terminalSize, 13);
       expect(preferences.terminalLineHeight, 1.2);
-      await tester.tap(find.byTooltip('关闭终端设置'));
+      await tester.tap(find.byKey(const ValueKey('adaptive-sheet-close')));
       await tester.pumpAndSettle();
       expect(
         tester.state<TerminalViewState>(find.byType(TerminalView)),

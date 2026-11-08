@@ -12,6 +12,31 @@ class WorkbenchLayout extends ChangeNotifier {
   bool terminalExpanded = true;
   bool showPreview = false;
 
+  /// 宽屏永久侧栏: 显隐(工具条按钮 / Ctrl+B)与宽度(拖拽, 夹在 220–420)。
+  bool sidebarVisible = true;
+  double sidebarWidth = defaultSidebarWidth;
+
+  static const double defaultSidebarWidth = 280;
+  static const double sidebarMinWidth = 220;
+  static const double sidebarMaxWidth = 420;
+
+  /// Ctrl+B / 工具条按钮: 收起或展开侧栏(宽度保留, 展开即恢复)。
+  void toggleSidebar() {
+    sidebarVisible = !sidebarVisible;
+    notifyListeners();
+  }
+
+  /// 拖拽右缘: 增量加到当前宽度并夹限; 无变化不通知。
+  void resizeSidebar(double delta) {
+    final next = (sidebarWidth + delta).clamp(
+      sidebarMinWidth,
+      sidebarMaxWidth,
+    );
+    if (next == sidebarWidth) return;
+    sidebarWidth = next;
+    notifyListeners();
+  }
+
   /// 展开终端看输出; 指定会话时先切到它(如 Web 运行的会话)
   void showOutput({String? sessionId}) {
     FocusManager.instance.primaryFocus?.unfocus();

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../../core/desktop/desktop_presentation.dart';
 import '../../../core/theme.dart';
 import '../../../core/workbench_controls.dart';
 import '../../../services/adb_ops.dart';
@@ -665,9 +666,10 @@ class _EditorRunControlsState extends State<EditorRunControls> {
     if (!mounted) return;
     final sel = _target;
     // Flutter 工程的运行平台: Web(本机预览) + 全部已连 Android 设备
-    await showModalBottomSheet<void>(
+    await showAdaptiveSheet<void>(
       context: context,
-      backgroundColor: AppColors.surface,
+      title: context.strings.runTarget,
+      width: 460,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, refreshSheet) {
           final targets = <(String, String)>[
@@ -675,22 +677,13 @@ class _EditorRunControlsState extends State<EditorRunControls> {
             for (final (serial, model) in _adbDevices)
               (serial, AdbOps.describe(serial, model).$1),
           ];
-          return SafeArea(
-            child: Column(
+          return Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const SheetHandle(),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                  padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
                   child: Row(
                     children: [
-                      Text(
-                        context.strings.runTarget,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
                       const Spacer(),
                       IconButton(
                         tooltip: context.strings.refresh,
@@ -698,7 +691,7 @@ class _EditorRunControlsState extends State<EditorRunControls> {
                           await _loadAdbDevices(reportError: true);
                           if (ctx.mounted) refreshSheet(() {});
                         },
-                        icon: const Icon(Icons.refresh, size: 20),
+                        icon: const Icon(Icons.refresh, size: 18),
                       ),
                     ],
                   ),
@@ -754,8 +747,7 @@ class _EditorRunControlsState extends State<EditorRunControls> {
                   },
                 ),
               ],
-            ),
-          );
+            );
         },
       ),
     );

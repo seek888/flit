@@ -1,11 +1,16 @@
 import 'package:flit/l10n/strings.dart';
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/theme.dart';
 import '../../core/page_layout.dart';
+import '../../l10n/desktop_strings.dart';
 import '../../services/console_command.dart';
+import '../../services/desktop_toolchain.dart';
+import '../../services/native_file_service.dart';
 import '../../services/paths.dart';
 import '../../services/shell.dart';
 
@@ -149,9 +154,16 @@ class _CreateProjectPageState extends State<CreateProjectPage> {
   bool _submitting = false;
   int _checkSequence = 0;
 
+  /// 工程位置：桌面端可用原生文件夹选择器改到任意文件夹，默认工程根。
+  late String _root;
+  final _pageFocus = FocusNode(debugLabel: 'create-project');
+
   @override
   void initState() {
     super.initState();
+    _root = isDesktopPlatform && widget.projectRoot.trim().isEmpty
+        ? DesktopToolchain.instance.projectsDir
+        : widget.projectRoot;
     _check();
   }
 
@@ -160,7 +172,60 @@ class _CreateProjectPageState extends State<CreateProjectPage> {
     _name.dispose();
     _org.dispose();
     _description.dispose();
+    _pageFocus.dispose();
     super.dispose();
+  }
+
+  DesktopStrings get _t => desktopStrings(context);
+
+  bool get _zh => Localizations.localeOf(context).languageCode.startsWith('zh');
+
+  String _tr(String zh, String en) => _zh ? zh : en;
+
+  /// 工程位置卡片：完整路径 + 选择文件夹 + 打开文件夹（桌面的「文件夹/资源管理器」语汇）。
+  Widget _locationCard() => SurfaceCard(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          _t.projectLocation,
+          style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+        ),
+        const SizedBox(height: 6),
+        SelectableText(_root, style: AppColors.mono.copyWith(fontSize: 12)),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            OutlinedButton.icon(
+              onPressed: _submitting ? null : _pickRoot,
+              icon: const Icon(Icons.folder_open_outlined, size: 16),
+              label: Text(_t.browse),
+            ),
+            TextButton.icon(
+              onPressed: () =>
+                  unawaited(NativeFileService.openFolder(_root)),
+              icon: const Icon(Icons.open_in_new, size: 16),
+              label: Text(_t.openFolder),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+
+  /// 选择工程所在的文件夹；取消保持原值。
+  Future<void> _pickRoot() async {
+    final picked = await NativeFileService.pickDirectory(
+      initialDirectory: _root,
+      title: _t.chooseProjectDirectory,
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _root = picked;
+      _error = null;
+    });
   }
 
   Future<void> _check() async {
@@ -254,7 +319,7 @@ class _CreateProjectPageState extends State<CreateProjectPage> {
       empty: _empty,
       androidLang: _androidLang,
       description: _description.text.trim(),
-      projectRoot: widget.projectRoot,
+      projectRoot: _root,
       template: _template,
     );
     setState(() {
@@ -262,7 +327,7 @@ class _CreateProjectPageState extends State<CreateProjectPage> {
       _error = null;
     });
     try {
-      final target = joinPath(widget.projectRoot, params.name);
+      final target = joinPath(_root, params.name);
       final bool? exists;
       if (isDesktopPlatform) {
         exists =
@@ -307,8 +372,26 @@ class _CreateProjectPageState extends State<CreateProjectPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: Text(context.strings.newProject)),
-    body: PageContent(
-      child: Column(
+    body: isDesktopPlatform
+        ? CallbackShortcuts(
+            bindings: <ShortcutActivator, VoidCallback>{
+              const SingleActivator(LogicalKeyboardKey.escape): () =>
+                  Navigator.of(context).maybePop(),
+              const SingleActivator(LogicalKeyboardKey.enter): _submit,
+              const SingleActivator(LogicalKeyboardKey.numpadEnter): _submit,
+            },
+            child: Focus(
+              focusNode: _pageFocus,
+              autofocus: true,
+              child: _body(context),
+            ),
+          )
+        : _body(context),
+  );
+
+  Widget _body(BuildContext context) => PageContent(
+    maxWidth: isDesktopPlatform ? 820 : null,
+    child: Column(
         children: [
           Expanded(
             child: AbsorbPointer(
@@ -320,10 +403,19 @@ class _CreateProjectPageState extends State<CreateProjectPage> {
                 children: [
                   PageIntro(
                     context.strings.projectConfiguration,
-                    context.strings.chooseTheProjectTypeNameAndTarget(
-                      widget.projectRoot,
-                    ),
+                    isDesktopPlatform
+                        ? _tr(
+                            '选择工程类型、名称和工程文件夹；创建完成后可在资源管理器中打开。',
+                            'Choose the project type, name and folder. Open it in Explorer after creation.',
+                          )
+                        : context.strings.chooseTheProjectTypeNameAndTarget(
+                            _root,
+                          ),
                   ),
+                  if (isDesktopPlatform) ...[
+                    _locationCard(),
+                    const SizedBox(height: 12),
+                  ],
                   SizedBox(
                     width: double.infinity,
                     child: SegmentedButton<String>(
@@ -581,7 +673,7 @@ class _CreateProjectPageState extends State<CreateProjectPage> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          joinPath(widget.projectRoot, _name.text.trim()),
+                          joinPath(_root, _name.text.trim()),
                           style: AppColors.mono,
                         ),
                       ],
@@ -597,24 +689,35 @@ class _CreateProjectPageState extends State<CreateProjectPage> {
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-            child: SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed: _valid && _tool == _ToolCheck.ok && !_submitting
-                    ? _submit
-                    : null,
-                child: _submitting
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Text(context.strings.createProject),
-              ),
-            ),
+            child: isDesktopPlatform
+                ? Row(
+                    children: [
+                      TextButton(
+                        onPressed: _submitting
+                            ? null
+                            : () => Navigator.of(context).maybePop(),
+                        child: Text(context.strings.cancel),
+                      ),
+                      const Spacer(),
+                      _submitButton(),
+                    ],
+                  )
+                : SizedBox(width: double.infinity, child: _submitButton()),
           ),
         ],
       ),
-    ),
+    );
+
+  Widget _submitButton() => FilledButton(
+    onPressed: _valid && _tool == _ToolCheck.ok && !_submitting
+        ? _submit
+        : null,
+    child: _submitting
+        ? const SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : Text(context.strings.createProject),
   );
 }

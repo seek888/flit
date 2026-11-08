@@ -40,3 +40,6 @@ android/app/profile/
 android/app/release/
 android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
 .workbuddy/
+
+# AgentTeams 运行时状态（计划/task/邮箱），属于本机会话产物
+.agent-teams/

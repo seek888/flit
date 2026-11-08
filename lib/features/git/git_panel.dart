@@ -2,6 +2,7 @@ import 'package:flit/l10n/strings.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/desktop/desktop_presentation.dart';
 import '../../core/host_platform.dart';
 import '../../core/theme.dart';
 import '../../services/git_repo.dart';
@@ -117,33 +118,14 @@ class _GitPanelState extends State<GitPanel> {
     try {
       final text = await git.repo.diff(change, staged: staged);
       if (!mounted) return;
-      await showModalBottomSheet<void>(
+      await showAdaptiveSheet<void>(
         context: context,
-        isScrollControlled: true,
-        builder: (ctx) => SafeArea(
-          child: SizedBox(
-            height: MediaQuery.sizeOf(ctx).height * .8,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const SheetHandle(),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                  child: Text(
-                    '${staged ? context.strings.staged : context.strings.unstaged} · ${change.path}',
-                    style: const TextStyle(fontSize: 13),
-                  ),
-                ),
-                const Divider(height: 1),
-                Expanded(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(16),
-                    child: SelectableText(text, style: AppColors.mono),
-                  ),
-                ),
-              ],
-            ),
-          ),
+        title:
+            '${staged ? context.strings.staged : context.strings.unstaged} · ${change.path}',
+        width: 720,
+        builder: (ctx) => Padding(
+          padding: const EdgeInsets.all(16),
+          child: SelectableText(text, style: AppColors.mono),
         ),
       );
     } catch (error) {
@@ -152,22 +134,13 @@ class _GitPanelState extends State<GitPanel> {
   }
 
   Future<void> _fileMenu(GitChange change) async {
-    final action = await showModalBottomSheet<String>(
+    final action = await showAdaptiveSheet<String>(
       context: context,
-      isScrollControlled: true,
-      builder: (ctx) => SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
+      title: change.path,
+      width: 420,
+      builder: (ctx) => Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const SheetHandle(),
-              ListTile(
-                title: Text(
-                  change.path,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
               if (change.staged)
                 ListTile(
                   leading: const Icon(Icons.difference_outlined),
@@ -204,9 +177,7 @@ class _GitPanelState extends State<GitPanel> {
                 ),
             ],
           ),
-        ),
-      ),
-    );
+        );
     if (!mounted) return;
     switch (action) {
       case 'stagedDiff':

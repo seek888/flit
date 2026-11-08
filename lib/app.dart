@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'core/desktop/desktop_app_shell.dart';
+import 'core/desktop/scroll_behavior.dart';
 import 'core/theme.dart';
 import 'features/projects/workbench_page.dart';
 import 'services/auto_proxy.dart';
@@ -51,6 +53,8 @@ class _FlitAppState extends State<FlitApp> with WidgetsBindingObserver {
     strings = lookupAppLocalizations(locale);
     return MaterialApp(
       title: 'Flit',
+      // 菜单栏在 Navigator 之上，对话框要能拿到根 Navigator 的 context。
+      navigatorKey: desktopNavigatorKey,
       locale: language == 'system' ? null : locale,
       localeListResolutionCallback: (locales, supported) =>
           resolveAppLocale(language, locales ?? const []),
@@ -58,6 +62,9 @@ class _FlitAppState extends State<FlitApp> with WidgetsBindingObserver {
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       debugShowCheckedModeBanner: false,
       navigatorObservers: [context.read<RouteObserver<PageRoute<dynamic>>>()],
+      scrollBehavior: const FlitScrollBehavior(),
+      // 桌面外壳（菜单栏 + 全局快捷键）；Android 上原样返回 child。
+      builder: (context, child) => DesktopAppShell(child: child!),
       theme: flitTheme(),
       home: const WorkbenchPage(),
     );

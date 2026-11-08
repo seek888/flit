@@ -63,6 +63,9 @@ printf '%s\n' "$PATH" "$LD_LIBRARY_PATH"
         isFalse,
       );
     },
+    // 该用例用 bash 实际 source env.sh 来验证幂等；Windows 没有 bash
+    // （Git 自带的 bash 不在 PATH 且行为不同），属平台专属用例。
+    skip: Platform.isWindows ? '需要 POSIX bash' : false,
   );
   test(
     'default installation resolves one stage lazily and keeps initialization mode',

@@ -1,4 +1,5 @@
 import 'package:flit/core/app_scope.dart';
+import 'package:flit/core/desktop/app_commands.dart';
 import 'package:flit/features/environment/environment_controller.dart';
 import 'package:flit/features/environment/toolchain_catalog.dart';
 import 'package:flit/features/git/github_account.dart';
@@ -23,6 +24,7 @@ AppServices testServices({
   ToolchainCatalog? catalog,
   PtySession? workbenchShell,
   ProjectWorkspace? workspace,
+  AppCommands? commands,
 }) {
   final proxies = proxy ?? AutoProxy();
   final launch = launcher ?? PtyLauncher(proxy: proxies).call;
@@ -36,6 +38,7 @@ AppServices testServices({
     workbenchShell: workbenchShell ?? PtySession(launcher: launch),
     workspace: workspace ?? ProjectWorkspace(launcher: launch),
     routeObserver: RouteObserver<PageRoute<dynamic>>(),
+    commands: commands ?? AppCommands(),
   );
 }
 

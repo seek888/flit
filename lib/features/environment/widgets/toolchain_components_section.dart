@@ -1,6 +1,7 @@
 import 'package:flit/l10n/strings.dart';
 import 'package:flutter/material.dart';
 
+import '../../../core/desktop/desktop_presentation.dart';
 import '../../../core/theme.dart';
 import '../environment_controller.dart';
 import '../installed_toolchain.dart';
@@ -119,18 +120,48 @@ class ToolchainComponentsSection extends StatelessWidget {
                   trailing: const Icon(Icons.chevron_right, size: 18),
                   onTap: !initialized
                       ? null
-                      : () => showModalBottomSheet<void>(
-                          context: context,
-                          isScrollControlled: true,
-                          useSafeArea: true,
-                          builder: (_) => ComponentVersionsSheet(
+                      : () {
+                          final sheet = ComponentVersionsSheet(
                             component: component,
                             environment: env,
                             catalog: catalog,
                             onInstall: onInstall,
                             onChange: onChange,
-                          ),
-                        ),
+                          );
+                          if (!desktopPresentation) {
+                            showModalBottomSheet<void>(
+                              context: context,
+                              isScrollControlled: true,
+                              useSafeArea: true,
+                              builder: (_) => sheet,
+                            );
+                            return;
+                          }
+                          // 组件版本面板自带头部与 85% 高度，桌面用有界对话框
+                          // 承载；不要再套 showAdaptiveSheet（那是无界滚动容器，
+                          // 会让内部的 FractionallySizedBox 拿到无限高度）。
+                          showDialog<void>(
+                            context: context,
+                            builder: (dialogContext) => Dialog(
+                              backgroundColor: AppColors.surface,
+                              insetPadding: const EdgeInsets.all(24),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                                side: const BorderSide(color: AppColors.border),
+                              ),
+                              clipBehavior: Clip.antiAlias,
+                              child: ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  maxWidth: 620,
+                                  maxHeight:
+                                      MediaQuery.sizeOf(dialogContext).height *
+                                      .85,
+                                ),
+                                child: sheet,
+                              ),
+                            ),
+                          );
+                        },
                 );
               },
             ),

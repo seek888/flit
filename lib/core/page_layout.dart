@@ -1,31 +1,47 @@
 import 'package:flutter/material.dart';
 
+import 'host_platform.dart';
 import 'theme.dart';
 
 /// Forms share the same reading width on phones and tablets.
+///
+/// 桌面窗口更宽，内容列放宽到 1180（Android 仍为 800），避免宽屏上表单被
+/// 挤成一条窄带；需要更窄的页面可显式传 [maxWidth]。
 class PageContent extends StatelessWidget {
-  const PageContent({super.key, required this.child});
+  const PageContent({super.key, required this.child, this.maxWidth});
+
   final Widget child;
 
+  /// 内容最大宽度；null = 桌面 1180 / Android 800。
+  final double? maxWidth;
+
   @override
-  Widget build(BuildContext context) => SafeArea(
-    top: false,
-    child: Align(
-      alignment: Alignment.topCenter,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 800),
-        child: child,
+  Widget build(BuildContext context) {
+    final width = maxWidth ?? (isDesktopPlatform ? 1180.0 : 800.0);
+    return SafeArea(
+      top: false,
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: width),
+          child: child,
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class PageList extends StatelessWidget {
-  const PageList({super.key, required this.children});
+  const PageList({super.key, required this.children, this.maxWidth});
+
   final List<Widget> children;
+
+  /// 透传给 [PageContent]；null 时按平台取默认值。
+  final double? maxWidth;
 
   @override
   Widget build(BuildContext context) => PageContent(
+    maxWidth: maxWidth,
     child: ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,

@@ -3,6 +3,9 @@ import 'package:flutter/services.dart';
 
 import 'app.dart';
 import 'core/app_scope.dart';
+import 'core/desktop/app_commands.dart';
+import 'core/desktop/desktop_app_shell.dart';
+import 'core/desktop/window_frame.dart';
 import 'features/environment/environment_controller.dart';
 import 'features/environment/toolchain_catalog.dart';
 import 'features/git/github_account.dart';
@@ -32,6 +35,9 @@ Future<AppServices> composeApp() async {
     ),
   );
   final workspace = ProjectWorkspace(launcher: launcher);
+  // 桌面外壳的默认命令（退出/关于/快捷键说明）；页面级命令由各页面自行注册。
+  final commands = AppCommands();
+  if (isDesktopPlatform) registerDesktopShellCommands(commands);
   return AppServices(
     launcher: launcher,
     proxy: proxy,
@@ -58,11 +64,15 @@ Future<AppServices> composeApp() async {
     workbenchShell: PtySession(launcher: launcher),
     workspace: workspace,
     routeObserver: RouteObserver<PageRoute<dynamic>>(),
+    commands: commands,
   );
 }
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 桌面窗口：恢复上次几何、接管关窗（先让页面保存再销毁）。
+  // 测试/无窗口插件环境里是安全 no-op。
+  if (isDesktopPlatform) await setupDesktopWindow();
   final services = await composeApp();
   // 沉浸式: 状态栏/导航栏透明融入页面(深色应用配浅色图标)。
   // 桌面端没有系统状态栏/导航栏，这两个调用在 Windows/macOS/Linux 上是无意义的

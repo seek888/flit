@@ -10,11 +10,21 @@ import 'package:flutter/services.dart';
 import 'package:flit_work/flit_work.dart';
 import 'package:xterm/xterm.dart';
 
+import '../../core/host_platform.dart';
 import '../../services/console_command.dart';
-import '../../services/shell.dart';
 import 'terminal_log.dart';
 
 enum ExecutionState { idle, starting, running, stopping, exited, failed }
+
+/// 默认交互会话在界面上的名字：Windows 是 cmd，Android 是 Termux 的 bash。
+///
+/// 进程实现与命令归一化仍按平台分叉，这里只负责「用户看到的名字」。
+String get defaultShellTitle => isWindowsPlatform ? 'cmd' : 'bash';
+
+/// 历史代码把默认会话固定标成 `bash`；桌面端显示时按宿主换名，
+/// 运行/构建会话自带的标题不受影响。
+String terminalDisplayTitle(String title) =>
+    title == 'bash' ? defaultShellTitle : title;
 
 /// The small process boundary also lets lifecycle tests run without native PTYs.
 abstract interface class SessionProcess {

@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/theme.dart';
+import '../../../l10n/desktop_strings.dart';
+import '../../../services/native_file_service.dart';
 import 'file_dialogs.dart';
 import '../../../services/file_ops.dart';
 import '../../../services/paths.dart';
@@ -266,9 +268,16 @@ class _FileTreeDrawerState extends State<FileTreeDrawer> {
   /// 项目树节点 → 绝对路径
   String _abs(_Node n) => joinPath(_project.path, n.path);
 
-  void _nodeMenu(_Node n) {
+  void _nodeMenu(_Node n, {Offset? position}) {
     final abs = _abs(n);
     showActionMenu(context, [
+      if (isDesktopPlatform)
+        (
+          'reveal',
+          Icons.folder_open_outlined,
+          desktopStrings(context).revealInExplorer,
+          () => NativeFileService.revealInExplorer(abs),
+        ),
       if (n.isDir && _ops.hasClip)
         (
           'paste',
@@ -595,8 +604,11 @@ class _FileTreeDrawerState extends State<FileTreeDrawer> {
     return InkWell(
       onTap: () => _toggle(n),
       onLongPress: () => _nodeMenu(n),
+      onSecondaryTapDown: (details) =>
+          _nodeMenu(n, position: details.globalPosition),
+      hoverColor: AppColors.hover,
       child: Container(
-        height: 34,
+        height: isDesktopPlatform ? 26 : 34,
         padding: EdgeInsets.fromLTRB(10.0 + depth * 14.0, 0, 8, 0),
         child: Row(
           children: [
@@ -638,8 +650,11 @@ class _FileTreeDrawerState extends State<FileTreeDrawer> {
     return InkWell(
       onTap: () => widget.onOpenFile(n.path),
       onLongPress: () => _nodeMenu(n),
+      onSecondaryTapDown: (details) =>
+          _nodeMenu(n, position: details.globalPosition),
+      hoverColor: AppColors.hover,
       child: Container(
-        height: 34,
+        height: isDesktopPlatform ? 26 : 34,
         padding: EdgeInsets.fromLTRB(26.0 + depth * 14.0, 0, 8, 0),
         color: selected ? AppColors.accent.withValues(alpha: 0.15) : null,
         child: Row(

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../../core/theme.dart';
@@ -5,6 +7,9 @@ import '../completion/completion_engine.dart';
 
 /// 桌面式补全浮层: 锚定在光标旁的纵向候选面板(优先显示在光标上方)。
 /// 不抢焦点: 键盘事件(Esc/Tab/↑↓)由编辑器页的 Focus 处理, 这里只响应点选。
+///
+/// [fontSize] 跟随编辑器字号缩放(Ctrl+滚轮/缩放命令), 行高与文案一起变,
+/// 默认 13 时保持原来的 40px 行高。
 class CompletionPopup extends StatelessWidget {
   const CompletionPopup({
     super.key,
@@ -14,6 +19,7 @@ class CompletionPopup extends StatelessWidget {
     required this.onDismiss,
     this.width = 300,
     this.maxRows = 5,
+    this.fontSize = 13,
   });
 
   final List<CompletionItem> items;
@@ -22,11 +28,21 @@ class CompletionPopup extends StatelessWidget {
   final VoidCallback onDismiss;
   final double width;
   final int maxRows;
+  final double fontSize;
 
-  double get height => items.length.clamp(1, maxRows) * 40.0;
+  /// 一行候选的高度: 字号 13 时是 40, 放大后线性跟随并按 32 兜底。
+  static double rowHeightFor(double fontSize) =>
+      math.max(32.0, fontSize * 40 / 13);
+
+  double get rowHeight => rowHeightFor(fontSize);
+
+  double get height => items.length.clamp(1, maxRows) * rowHeight;
 
   @override
   Widget build(BuildContext context) {
+    final labelSize = fontSize.clamp(11.0, 18.0);
+    final detailSize = math.max(9.0, labelSize - 3);
+    final iconSize = (labelSize + 2).clamp(14.0, 20.0);
     return ExcludeFocus(
       child: TextFieldTapRegion(
         onTapOutside: (_) => onDismiss(),
@@ -48,7 +64,7 @@ class CompletionPopup extends StatelessWidget {
                 thickness: 3,
                 child: ListView.builder(
                   padding: EdgeInsets.zero,
-                  itemExtent: 40,
+                  itemExtent: rowHeight,
                   itemCount: items.length,
                   itemBuilder: (_, index) {
                     final item = items[index];
@@ -67,7 +83,7 @@ class CompletionPopup extends StatelessWidget {
                               item.semantic == null
                                   ? Icons.text_fields
                                   : Icons.code,
-                              size: 15,
+                              size: iconSize,
                               color: item.semantic == null
                                   ? AppColors.textFaint
                                   : AppColors.accent,
@@ -78,9 +94,9 @@ class CompletionPopup extends StatelessWidget {
                                 item.label,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontFamily: 'monospace',
-                                  fontSize: 13,
+                                  fontSize: labelSize,
                                   color: AppColors.textPrimary,
                                 ),
                               ),
@@ -96,9 +112,9 @@ class CompletionPopup extends StatelessWidget {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   textAlign: TextAlign.right,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontFamily: 'monospace',
-                                    fontSize: 10,
+                                    fontSize: detailSize,
                                     color: AppColors.textFaint,
                                   ),
                                 ),
@@ -107,8 +123,8 @@ class CompletionPopup extends StatelessWidget {
                             const SizedBox(width: 6),
                             Text(
                               item.kind,
-                              style: const TextStyle(
-                                fontSize: 10,
+                              style: TextStyle(
+                                fontSize: detailSize,
                                 color: AppColors.textFaint,
                               ),
                             ),
