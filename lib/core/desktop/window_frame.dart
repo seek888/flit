@@ -3,6 +3,7 @@
 // 正是该形状，桌面窗口行为由 verifier 在真实运行中复验。
 // ignore_for_file: deprecated_member_use
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -250,7 +251,12 @@ Future<void> setupDesktopWindow() async {
     );
 
     await windowManager.setPreventClose(true);
-    _windowListener ??= _DesktopWindowListener(_handleWindowClose);
+    _windowListener ??= _DesktopWindowListener(
+      onClose: _handleWindowClose,
+      // 拖动/缩放/最大化时防抖落盘：关窗那一刻再查 bounds 可能已被系统拆掉，
+      // 只靠关闭流程会让「几何记忆」在多数退出路径上失效。
+      onGeometryChanged: () => unawaited(saveDesktopWindowGeometry()),
+    );
     windowManager.addListener(_windowListener!);
   } catch (error) {
     debugPrint('桌面窗口初始化跳过: $error');
@@ -273,12 +279,35 @@ Future<void> _handleWindowClose() async {
 }
 
 class _DesktopWindowListener with WindowListener {
-  _DesktopWindowListener(this.onClose);
+  _DesktopWindowListener({
+    required this.onClose,
+    required this.onGeometryChanged,
+  });
 
   final VoidCallback onClose;
+  final VoidCallback onGeometryChanged;
+  Timer? _debounce;
+
+  /// 连续拖动/缩放只写一次盘：600ms 内没有新事件才落盘。
+  void _scheduleSave() {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 600), onGeometryChanged);
+  }
 
   @override
   void onWindowClose() => onClose();
+
+  @override
+  void onWindowResized() => _scheduleSave();
+
+  @override
+  void onWindowMoved() => _scheduleSave();
+
+  @override
+  void onWindowMaximize() => _scheduleSave();
+
+  @override
+  void onWindowUnmaximize() => _scheduleSave();
 }
 
 /// 修改窗口标题（幂等：相同标题不重复调用原生 API；非桌面 no-op）。
