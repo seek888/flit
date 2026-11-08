@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -89,4 +91,10 @@ void main() async {
     );
   }
   runApp(AppScope(services: services, child: const FlitApp()));
+  // 窗口几何恢复放在首帧后：这时 DPR 才是真实值，夹取/居中的屏幕尺寸才正确。
+  if (isDesktopPlatform) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(applyRestoredWindowBounds());
+    });
+  }
 }

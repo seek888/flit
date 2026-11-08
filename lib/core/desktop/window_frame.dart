@@ -113,13 +113,8 @@ WindowGeometry clampWindowGeometry(WindowGeometry geometry, Size screen) {
   );
   double? x = geometry.x;
   double? y = geometry.y;
-  if (x != null) {
-    // 允许放到主屏左侧的副屏（负 x），但保证至少 160px 可见。
-    x = _clampAxis(x, -(width - 160), screen.width - 160);
-  }
-  if (y != null) {
-    y = _clampAxis(y, 0, screen.height - 64);
-  }
+  if (x != null) x = _fitAxis(x, width, screen.width);
+  if (y != null) y = _fitAxis(y, height, screen.height, allowNegative: false);
   return WindowGeometry(
     width: width,
     height: height,
@@ -127,6 +122,23 @@ WindowGeometry clampWindowGeometry(WindowGeometry geometry, Size screen) {
     y: y,
     maximized: geometry.maximized,
   );
+}
+
+/// 把窗口的一个轴收回到屏幕内。
+///
+/// 只夹「起点」不够：1500 宽 + x=640 在 1707 可用逻辑宽下会把半个窗口推到屏幕外。
+/// 所以按 `起点 + 尺寸` 夹：能整窗放下就整窗放下，放不下（比屏幕还大）就贴 0。
+/// [allowNegative] 为真时允许负值（副屏在主屏左边），但至少留 160px 可见。
+double _fitAxis(
+  double value,
+  double extent,
+  double limit, {
+  bool allowNegative = true,
+}) {
+  final minValue = allowNegative ? -(extent - 160) : 0.0;
+  if (extent >= limit) return _clampAxis(value, minValue, 0.0);
+  final maxValue = limit - extent;
+  return _clampAxis(value, minValue, maxValue);
 }
 
 double _clampAxis(double value, double lower, double upper) {
@@ -201,6 +213,32 @@ bool _closing = false;
 String? _windowTitle;
 _DesktopWindowListener? _windowListener;
 
+/// 首帧后再应用上次几何：`setupDesktopWindow` 跑在 runApp 之前，此时
+/// platformDispatcher 的 devicePixelRatio 往往还是 1.0，按它算出来的屏幕
+/// 逻辑尺寸会把窗口夹到屏幕外（150% 缩放下实测右边缘超出 500px）。
+WindowGeometry? _pendingRestore;
+
+/// 首帧后恢复上次的窗口位置/大小（测试/无窗口环境安全 no-op）。
+Future<void> applyRestoredWindowBounds() async {
+  if (!isDesktopPlatform) return;
+  final saved = _pendingRestore;
+  _pendingRestore = null;
+  if (saved == null) return;
+  try {
+    final screen = desktopScreenSize();
+    final geometry = clampWindowGeometry(saved, screen);
+    final x = geometry.x ?? math.max(0, (screen.width - geometry.width) / 2);
+    final y = geometry.y ?? math.max(0, (screen.height - geometry.height) / 2);
+    await windowManager.setBounds(
+      Rect.fromLTWH(x, y, geometry.width, geometry.height),
+    );
+    if (geometry.maximized) await windowManager.maximize();
+    await saveDesktopWindowGeometry();
+  } catch (error) {
+    debugPrint('恢复窗口几何失败: $error');
+  }
+}
+
 /// 桌面窗口初始化：恢复几何、居中/最大化、阻止默认关窗并接管退出流程。
 ///
 /// 必须在 `runApp` 之前调用；非桌面平台、测试环境（无窗口插件/无显示器）
@@ -210,35 +248,27 @@ Future<void> setupDesktopWindow() async {
   _windowSetupDone = true;
   try {
     await windowManager.ensureInitialized();
+    final screen = desktopScreenSize();
     final saved = await loadDesktopWindowGeometry();
-    final geometry = saved == null
-        ? null
-        : clampWindowGeometry(saved, desktopScreenSize());
+    final geometry = saved == null ? null : clampWindowGeometry(saved, screen);
     final size = geometry == null
         ? defaultDesktopWindowSize
         : Size(geometry.width, geometry.height);
-    final hasPosition = geometry?.x != null && geometry?.y != null;
+    _pendingRestore = geometry;
 
     await windowManager.waitUntilReadyToShow(
       WindowOptions(
         size: size,
-        center: !hasPosition,
+        // 不交给 window_manager 居中：它在 150% DPI 下把物理像素当逻辑像素，
+        // 会把窗口放到屏幕右外侧。位置由首帧后的 applyRestoredWindowBounds
+        // 用真实 DPR 精确定位；没有历史几何时保持 main.cpp 的 (10,10)。
+        center: false,
         minimumSize: minimumDesktopWindowSize,
         title: 'Flit',
         backgroundColor: AppColors.bg,
       ),
       () async {
         try {
-          if (hasPosition) {
-            await windowManager.setBounds(
-              Rect.fromLTWH(
-                geometry!.x!,
-                geometry.y!,
-                geometry.width,
-                geometry.height,
-              ),
-            );
-          }
           if (geometry?.maximized ?? false) {
             await windowManager.maximize();
           }

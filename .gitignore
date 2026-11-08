@@ -43,3 +43,6 @@ android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
 
 # AgentTeams 杩愯鏃剁姸鎬侊紙璁″垝/task/閭锛夛紝灞炰簬鏈満浼氳瘽浜х墿
 .agent-teams/
+
+# 本地 Claude 代理配置（非项目资产）
+.claude/
