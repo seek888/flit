@@ -1,4 +1,5 @@
 import 'package:flit/l10n/strings.dart';
+import '../../services/shell.dart';
 import 'installed_toolchain.dart';
 import 'toolchain_catalog.dart';
 
@@ -29,6 +30,14 @@ class ToolchainComponent {
     ToolchainComponent('platform-tools', 'Platform Tools', shared: true),
     ToolchainComponent('cmdline-tools', 'Command-line Tools', shared: true),
   ];
+
+  /// 组件管理页展示的条目。
+  ///
+  /// 桌面端由 sdkmanager 统一管理 SDK：`platform-tools` / `cmdline-tools`
+  /// 是「Android 工具链」阶段的产物，不作为可切换版本单独列出。
+  static List<ToolchainComponent> get visible => isDesktopPlatform
+      ? all.where((component) => !component.shared).toList(growable: false)
+      : all;
 
   List<InstalledToolchain> installed(List<InstalledToolchain> tools) =>
       tools.where((tool) => tool.component == id).toList();

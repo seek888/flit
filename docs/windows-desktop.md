@@ -81,6 +81,13 @@ Windows 版**不依赖**你预先安装 Flutter/Android SDK/JDK，也**不会**�
   `SDK_TEST_BASE_URL=<镜像根>/`，因此**包元数据、包本体和 sha1 校验都来自镜像**，
   与直接连 Google 等价。
 - GitHub 前缀是可回退列表：某个公共代理被限流/下线时自动试下一个，最后直连兜底。
+- **组件管理里的「版本目录」在桌面端不查 GitHub**：Platforms / Build Tools / NDK /
+  CMake（含 ninja）的可安装版本来自 `sdkmanager --list`（走上面的 Android SDK 镜像），
+  Flutter 来自 `storage.flutter-io.cn` 的 Windows 清单（只列 stable 通道最新 30 个）。
+  原因：GitHub 上 `cmake-custom` / `android-ndk-custom` 发布的是
+  `*-aarch64-linux-android.tar.xz` 这类 **Android 宿主**产物，Windows 上装不了；
+  桌面端改用 sdkmanager 的 `cmake;3.22.1` / `ndk;<revision>` 包（其中的 ninja 随
+  CMake 包一起提供）。所以安装 CMake/Ninja、NDK 都不再依赖 GitHub。
 - 官方源仍然可用：用 `--official` 跑验证工具，或把上述变量设为官方地址/空值。
 
 ### 2.2 验证工具（真实网络自检）

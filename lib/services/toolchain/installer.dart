@@ -41,6 +41,14 @@ typedef _FlutterRelease = ({
   String version,
 });
 
+/// 版本目录里的一条 Flutter 可安装版本。
+typedef FlutterReleaseInfo = ({
+  String version,
+  String url,
+  String archiveName,
+  String? sha256,
+});
+
 /// 按阶段安装各组件：解析清单（镜像）→ 下载（进度/SHA-256/超时）→ 解压
 /// （tar/PowerShell）→ 发布到私有目录 → 结构校验。每步 yield 日志；
 /// 已装且结构通过则跳过；失败抛 [ToolchainException]（可重试）。
@@ -727,6 +735,47 @@ class ToolchainInstaller {
       size: null,
       version: (release['version'] as String?) ?? '',
     );
+  }
+
+  /// 可安装的 Flutter Windows 版本清单（走镜像，供桌面「版本目录」使用）。
+  ///
+  /// 与 GitHub 目录无关：来源是 `FLUTTER_STORAGE_BASE_URL`（默认
+  /// `storage.flutter-io.cn`）的 `releases_windows.json`。
+  ///
+  /// 只列 **stable** 通道的最新若干版本：清单里还有 600+ 条 beta/dev/pre
+  /// 版本，全塞进版本弹层既慢又没意义；需要特定旧版本时仍可指定版本安装。
+  Future<List<FlutterReleaseInfo>> flutterReleases({int limit = 30}) async {
+    final manifest = await _flutterManifest();
+    final baseRaw =
+        manifest['base_url'] as String? ??
+        'https://storage.googleapis.com/flutter_infra_release/releases';
+    final base = _rewriteStorageBase(baseRaw);
+    final seen = <String>{};
+    final result = <FlutterReleaseInfo>[];
+    for (final release in (manifest['releases'] as List? ?? const <dynamic>[])
+        .whereType<Map>()) {
+      final channel = (release['channel'] as String? ?? '').toLowerCase();
+      // 没有 channel 字段的历史条目也接受（旧清单才缺这个字段）。
+      if (channel.isNotEmpty && channel != 'stable') continue;
+      final archive = release['archive'] as String? ?? '';
+      if (!archive.toLowerCase().endsWith('.zip')) continue;
+      final version = (release['version'] as String? ?? '').trim();
+      if (version.isEmpty || !seen.add(version)) continue;
+      final sha = (release['sha256'] as String?)?.toLowerCase();
+      result.add((
+        version: version,
+        url: _resolveStorageUrl(base, archive),
+        archiveName: archive.split('/').last,
+        sha256: sha != null && RegExp(r'^[0-9a-f]{64}$').hasMatch(sha)
+            ? sha
+            : null,
+      ));
+    }
+    result.sort((a, b) => _compareVersions(b.version, a.version));
+    if (limit > 0 && result.length > limit) {
+      return result.take(limit).toList(growable: false);
+    }
+    return result;
   }
 
   String _rewriteStorageBase(String baseUrl) {

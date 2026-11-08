@@ -3,13 +3,26 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../../services/desktop_toolchain.dart';
 import '../../services/github_mirror.dart';
+import '../../services/shell.dart';
+import '../../services/toolchain/installer.dart' show FlutterReleaseInfo;
+import '../../services/toolchain/sdk_manager.dart';
 
-/// 查询已配置构建仓库的 GitHub Releases，失败时保留本次会话内的缓存。
+/// Queries GitHub Releases for the configured repositories (Android side), and
+/// the Android SDK repository / Flutter mirror on desktop.
+///
+/// 桌面端**不使用 GitHub 目录**：CMake/Ninja、NDK、Platforms、Build Tools 的
+/// 可安装版本来自 `sdkmanager --list`（走国内镜像），Flutter 来自
+/// `storage.flutter-io.cn` 的 Windows 清单。GitHub 上那些
+/// `*-aarch64-linux-android.tar.xz` 产物在 Windows 上根本装不了。
 class ToolchainCatalog {
-  ToolchainCatalog({this.sources = components});
+  ToolchainCatalog({Map<String, CatalogSource>? sources, ToolchainLayout? layout})
+    : sources = sources ?? (isDesktopPlatform ? desktopSources : components),
+      _layout = layout;
 
   final Map<String, CatalogSource> sources;
+  final ToolchainLayout? _layout;
 
   /// 可注入测试
   Future<Object?> Function(String url) fetchJson = _fetchJsonDefault;
@@ -113,6 +126,193 @@ class ToolchainCatalog {
     ),
   };
 
+  /// 桌面端目录：repo 留空表示「不查 GitHub」，由 SDK 仓库 / Flutter 镜像提供版本。
+  /// `defaultTag` 与 [desktopEntries] / [desktopFlutterEntries] 生成的 tag 一致。
+  static const desktopSources = <String, CatalogSource>{
+    'platforms': CatalogSource(
+      repo: '',
+      asset: '',
+      install: '',
+      tagPattern: r'^platform-[0-9]+(?:\.[0-9]+)?$',
+      defaultTag: 'platform-$platformVersion',
+    ),
+    'build-tools': CatalogSource(
+      repo: '',
+      asset: '',
+      install: '',
+      tagPattern: r'^sdk-[0-9]+\.[0-9]+\.[0-9]+$',
+      defaultTag: 'sdk-$sdkVersion',
+    ),
+    'ndk': CatalogSource(
+      repo: '',
+      asset: '',
+      install: '',
+      tagPattern: r'^ndk-[0-9]+\.[0-9]+\.[0-9]+$',
+      defaultTag: 'ndk-$ndkVersion',
+    ),
+    'cmake': CatalogSource(
+      repo: '',
+      asset: '',
+      install: '',
+      tagPattern: r'^cmake-[0-9]+\.[0-9]+\.[0-9]+$',
+      defaultTag: 'cmake-$cmakeVersion',
+    ),
+    'flutter-sdk': CatalogSource(
+      repo: '',
+      asset: '',
+      install: '',
+      tagPattern: r'^flutter-[0-9]+\.[0-9]+\.[0-9]+$',
+      defaultTag: 'flutter-$flutterVersion',
+    ),
+  };
+
+  ToolchainLayout get _desktopLayout => _layout ?? ToolchainLayout.defaultLayout();
+
+  /// `sdkmanager --list` → 版本目录条目（纯函数，单测覆盖）。
+  ///
+  /// tag 沿用仓库原有的前缀约定，下游 `DesktopSetupRunner` 与 UI 不需要改：
+  /// `platforms;android-36` → `platform-36`、`cmake;3.22.1` → `cmake-3.22.1`。
+  static List<CatalogEntry> desktopEntries(List<SdkPackage> packages) {
+    final result = <CatalogEntry>[];
+    for (final package in packages) {
+      final path = package.path;
+      String? component;
+      String? tag;
+      if (path.startsWith('platforms;')) {
+        final api = path.substring('platforms;'.length);
+        if (!RegExp(r'^android-[0-9]+(?:\.[0-9]+)?$').hasMatch(api)) continue;
+        component = 'platforms';
+        tag = 'platform-${api.replaceFirst('android-', '')}';
+      } else if (path.startsWith('build-tools;')) {
+        final version = path.substring('build-tools;'.length);
+        if (!RegExp(r'^[0-9]+\.[0-9]+\.[0-9]+$').hasMatch(version)) continue;
+        component = 'build-tools';
+        tag = 'sdk-$version';
+      } else if (path.startsWith('ndk;')) {
+        final version = path.substring('ndk;'.length);
+        if (!RegExp(r'^[0-9]+\.[0-9]+\.[0-9]+$').hasMatch(version)) continue;
+        component = 'ndk';
+        tag = 'ndk-$version';
+      } else if (path.startsWith('cmake;')) {
+        final version = path.substring('cmake;'.length);
+        if (!RegExp(r'^[0-9]+\.[0-9]+\.[0-9]+$').hasMatch(version)) continue;
+        component = 'cmake';
+        tag = 'cmake-$version';
+      } else {
+        continue;
+      }
+      result.add(
+        CatalogEntry(
+          component: component,
+          repo: 'android-sdk',
+          tag: tag,
+          name: package.description.isEmpty ? path : package.description,
+          // 安装走 sdkmanager 包路径；这里没有可直接 wget 的 https 地址。
+          url: 'sdkmanager:$path',
+          size: 0,
+          sha256: null,
+        ),
+      );
+    }
+    result.sort(
+      (a, b) => _compareVersions(
+        b.tag.split('-').skip(1).join('-'),
+        a.tag.split('-').skip(1).join('-'),
+      ),
+    );
+    return result;
+  }
+
+  /// Flutter 镜像清单 → 版本目录条目（纯函数）。
+  static List<CatalogEntry> desktopFlutterEntries(
+    List<FlutterReleaseInfo> releases,
+  ) => <CatalogEntry>[
+    for (final release in releases)
+      CatalogEntry(
+        component: 'flutter-sdk',
+        repo: 'flutter',
+        tag: 'flutter-${release.version}',
+        name: 'Flutter ${release.version}（Windows x64）',
+        url: release.url,
+        size: 0,
+        sha256: release.sha256,
+      ),
+  ];
+
+  static int _compareVersions(String a, String b) {
+    final left = a
+        .split(RegExp(r'[^0-9]+'))
+        .where((part) => part.isNotEmpty)
+        .map(int.tryParse)
+        .whereType<int>()
+        .toList();
+    final right = b
+        .split(RegExp(r'[^0-9]+'))
+        .where((part) => part.isNotEmpty)
+        .map(int.tryParse)
+        .whereType<int>()
+        .toList();
+    final length = left.length > right.length ? left.length : right.length;
+    for (var i = 0; i < length; i++) {
+      final l = i < left.length ? left[i] : 0;
+      final r = i < right.length ? right[i] : 0;
+      if (l != r) return l.compareTo(r);
+    }
+    return a.compareTo(b);
+  }
+
+  /// 桌面端版本目录：SDK 仓库（镜像）里的包 + Flutter 镜像清单。
+  Future<Map<String, List<CatalogEntry>>> _collectDesktop() async {
+    final result = <String, List<CatalogEntry>>{};
+    errors.clear();
+    final toolchain = DesktopToolchain(layout: _desktopLayout);
+    final manager = toolchain.installer.sdkManager;
+
+    const sdkComponents = <String>[
+      'platforms',
+      'build-tools',
+      'ndk',
+      'cmake',
+    ];
+    if (manager.available) {
+      try {
+        final packages = await manager.listPackages();
+        for (final id in sdkComponents) {
+          result[id] = List<CatalogEntry>.unmodifiable(
+            desktopEntries(packages).where((e) => e.component == id),
+          );
+          if (result[id]!.isEmpty) {
+            errors[id] = strings.noDownloadableCompanionVersionsInTheRepository;
+          }
+          _cache[id] = result[id]!;
+        }
+      } catch (error) {
+        for (final id in sdkComponents) {
+          errors[id] = '$error';
+          result[id] = _cache[id] ?? const <CatalogEntry>[];
+        }
+      }
+    } else {
+      for (final id in sdkComponents) {
+        errors[id] = '需要先完成 Android 工具链（JDK 与 cmdline-tools），'
+            '然后再刷新版本列表';
+        result[id] = _cache[id] ?? const <CatalogEntry>[];
+      }
+    }
+
+    try {
+      final releases = await toolchain.installer.flutterReleases();
+      result['flutter-sdk'] = List<CatalogEntry>.unmodifiable(
+        desktopFlutterEntries(releases),
+      );
+      _cache['flutter-sdk'] = result['flutter-sdk']!;
+    } catch (error) {
+      errors['flutter-sdk'] = '$error';
+      result['flutter-sdk'] = _cache['flutter-sdk'] ?? const <CatalogEntry>[];
+    }
+    return Map.unmodifiable(result);
+  }
+
   Map<String, List<CatalogEntry>> get lastGood => Map.unmodifiable(_cache);
 
   CatalogSource sourceFor(String component) => component == 'bootstrap'
@@ -122,6 +322,18 @@ class ToolchainCatalog {
 
   /// Exact-tag lookup avoids depending on /latest or release ordering.
   Future<CatalogEntry> resolve(String component, {String? tag}) async {
+    if (isDesktopPlatform) {
+      final versions = await collect();
+      final entries = versions[component] ?? const <CatalogEntry>[];
+      final selected = tag ?? sources[component]?.defaultTag ?? '';
+      for (final entry in entries) {
+        if (entry.tag == selected) return entry;
+      }
+      throw StateError(
+        '桌面端版本目录里没有 $component:$selected'
+        '（请在「版本目录」里刷新后重试）',
+      );
+    }
     final source = sourceFor(component);
     final selected = tag ?? source.defaultTag;
     if (source.repo.isEmpty || !source.acceptsTag(selected)) {
@@ -197,6 +409,16 @@ class ToolchainCatalog {
   /// 多个入口都复用同一结果/请求；空目录和失败也缓存，避免滚动触发重试风暴。
   /// 安装仍用 resolve 校验最新资产；用户通过刷新显式更新版本列表。
   Future<Map<String, List<CatalogEntry>>> collect({bool forceRefresh = false}) {
+    if (isDesktopPlatform) {
+      if (_collecting != null) return _collecting!;
+      if (!forceRefresh && _snapshot != null) return Future.value(_snapshot!);
+      return _collecting = _collectDesktop()
+          .then((result) {
+            _snapshot = result;
+            return result;
+          })
+          .whenComplete(() => _collecting = null);
+    }
     if (_collecting != null) return _collecting!;
     if (!forceRefresh && _snapshot != null) return Future.value(_snapshot!);
     return _collecting = _collect()

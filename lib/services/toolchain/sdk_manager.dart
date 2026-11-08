@@ -5,6 +5,17 @@ import 'errors.dart';
 import 'layout.dart';
 import 'process.dart';
 
+/// `sdkmanager --list` 的一行可安装/已安装包。
+///
+/// [path] 就是 sdkmanager 的包路径（`cmake;3.22.1`、`platforms;android-36`…）。
+/// 桌面端把它当作「版本目录」的唯一真值源，不再依赖 GitHub 上的 Android 产物。
+typedef SdkPackage = ({
+  String path,
+  String version,
+  String description,
+  bool installed,
+});
+
 /// Android SDK 组件安装器。
 ///
 /// 绕开 `.bat`：`sdkmanager.bat` 在路径含空格/`&` 时会被 shell 拆参数，
@@ -126,6 +137,70 @@ class SdkManager {
     if (exitCode != 0) {
       throw SdkManagerException('接受 Android SDK 许可失败（退出码 $exitCode）');
     }
+  }
+
+  /// 查询 SDK 仓库（国内镜像或官方）里的可安装包；耗时较长（要拉仓库元数据）。
+  Future<List<SdkPackage>> listPackages({
+    Duration timeout = const Duration(minutes: 6),
+  }) async {
+    _ensureAvailable();
+    final result = await process.run(
+      layout.javaExe,
+      <String>[...commandPrefix, '--list'],
+      environment: layout.childEnvironment(),
+      timeout: timeout,
+    );
+    return parseListOutput('${result.stdout}\n${result.stderr}');
+  }
+
+  /// 解析 `sdkmanager --list` 输出（纯函数，单测用固定文本覆盖）。
+  ///
+  /// 结构：`Installed packages:` / `Available Packages:` 两个分段，行形如
+  /// `  cmake;3.22.1  | 3.22.1 | CMake 3.22.1 | cmake\3.22.1`
+  /// （最后一列只有已安装行才有）。
+  static List<SdkPackage> parseListOutput(String text) {
+    final byPath = <String, SdkPackage>{};
+    var installed = false;
+    for (final rawLine in text.split(RegExp(r'\r?\n'))) {
+      final line = rawLine.trim();
+      if (line.isEmpty) continue;
+      final lower = line.toLowerCase();
+      if (lower.startsWith('installed packages')) {
+        installed = true;
+        continue;
+      }
+      if (lower.startsWith('available packages') ||
+          lower.startsWith('available updates')) {
+        installed = false;
+        continue;
+      }
+      if (!line.contains('|')) continue;
+      final cells = line.split('|').map((cell) => cell.trim()).toList();
+      if (cells.length < 2) continue;
+      final path = cells[0];
+      if (path.isEmpty || path.contains(' ') || path == 'Path') continue;
+      // 包路径形如 `type;version`；platform-tools / emulator / tools 没有分号。
+      if (!path.contains(';') &&
+          path != 'platform-tools' &&
+          path != 'emulator' &&
+          path != 'tools') {
+        continue;
+      }
+      final package = (
+        path: path,
+        version: cells[1],
+        description: cells.length > 2 ? cells[2] : '',
+        installed: installed,
+      );
+      final existing = byPath[path];
+      // 同一包可能同时出现在两个分段里：已安装优先保留。
+      if (existing == null || (!existing.installed && installed)) {
+        byPath[path] = package;
+      }
+    }
+    final result = byPath.values.toList()
+      ..sort((a, b) => a.path.compareTo(b.path));
+    return result;
   }
 
   Future<void> installPackages(List<String> packages) async {

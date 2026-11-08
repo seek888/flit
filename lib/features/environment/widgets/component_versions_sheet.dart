@@ -263,7 +263,9 @@ class _ComponentVersionsSheetState extends State<ComponentVersionsSheet> {
     },
   );
 
-  static String _formatSize(int bytes) => bytes < 1024 * 1024
+  static String _formatSize(int bytes) => bytes <= 0
+      ? '—'
+      : bytes < 1024 * 1024
       ? '${(bytes / 1024).toStringAsFixed(0)} KB'
       : bytes < 1024 * 1024 * 1024
       ? '${(bytes / 1024 / 1024).toStringAsFixed(0)} MB'

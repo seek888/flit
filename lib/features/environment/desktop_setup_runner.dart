@@ -214,9 +214,16 @@ class DesktopSetupRunner {
       case 'cmake':
         return (id: 'cmake', version: tag.replaceFirst('cmake-', ''));
       case 'ndk':
-        // 发布 tag 是 r 系列，项目要求的完整 Pkg.Revision 来自 AGP 声明
-        // （与 Android 一样安装默认 revision）。
-        return (id: 'ndk', version: ToolchainCatalog.ndkVersion);
+        // 桌面端目录里的 tag 是 sdkmanager 的完整 Pkg.Revision
+        // （desktop_catalog 生成 `ndk-28.2.13676358`）；Android 的 r 标签
+        // 仍回退到默认 revision。
+        final revision = tag.replaceFirst('ndk-', '');
+        return (
+          id: 'ndk',
+          version: RegExp(r'^\d+\.\d+\.\d+$').hasMatch(revision)
+              ? revision
+              : ToolchainCatalog.ndkVersion,
+        );
       case 'platform-tools':
         return (id: 'platform-tools', version: '');
       case 'cmdline-tools':

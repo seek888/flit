@@ -57,7 +57,7 @@ class ToolchainComponentsSection extends StatelessWidget {
               ),
             ),
           ),
-          for (final component in ToolchainComponent.all)
+          for (final component in ToolchainComponent.visible)
             Builder(
               builder: (context) {
                 final local = component.installed(env.installed);
