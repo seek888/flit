@@ -18,25 +18,34 @@ Flutter 3.47.9（`D:\flit-verify\home\flutter`）· 构建：`flutter build wind
 
 ## 2. 逐项结果
 
+> 证据说明：本机 Flutter 窗口不暴露 UIA 语义树，探针只能用坐标点击；而截图含标题栏、
+> 点击走客户区（相差约 46 px），因此**行级/工具条点击在自动化里不可靠**。下表把「已用
+> 截图为证」与「代码已实现、但自动化未稳定复现」分开标注；最终证据目录只保留可靠截图：
+> `01-home.png`（列表+菜单栏+cmd 会话）、`02-menu-file.png`（文件菜单：快捷键与禁用置灰）、
+> `04-editor.png`（宽屏编辑器：侧栏/标签/状态栏）、`07-editor-960.png`（960 宽下限）、
+> `08-editor-1500.png`（1500 宽）、`09-shortcuts.png`（F1 快捷键说明对话框）、
+> 以及 `manifest.json`（每张图的窗口位置/大小/DPI，可证明几何恢复）。
+
 | # | 验收项 | 结果 | 证据 |
 | --- | --- | --- | --- |
 | 1 | 原生标题栏 + 标题「Flit」/「my_app — Flit」 | ✅ | `01-home.png`、`04-editor.png` |
 | 2 | 菜单栏 文件/编辑/视图/运行/帮助，快捷键右对齐，未注册项置灰 | ✅ | `02-menu-file.png`、`03-menu-view.png` |
 | 3 | 工程列表桌面化：命令工具条 + 搜索 + 表格（名称/路径/类型/修改时间） | ✅ | `01-home.png` |
-| 4 | 工程行悬停高亮、选中、双击打开、右键菜单、↑↓/Enter | ✅（键盘全通；悬停通过探针实测） | `k-275.png`、`04-editor.png` |
-| 5 | 宽屏永久侧栏（文件树/版本控制 + 设置/关闭项目），可拖宽度 | ✅ | `04-editor.png`、`05-editor-git.png` |
-| 6 | 文件标签行（关闭 ✕、右键菜单、中键） | ✅ | `04-editor.png` |
+| 4 | 工程行悬停高亮、选中、双击打开、右键菜单、↑↓/Enter | ⚠️ 键盘打开已实测（`04-editor.png` 即由 ↑↓+Enter 打开）；悬停/右键的代码路径存在，探针坐标不可靠未稳定复现 | `04-editor.png` |
+| 5 | 宽屏永久侧栏（文件树/版本控制 + 设置/关闭项目），可拖宽度 | ✅ | `04-editor.png` |
+| 6 | 文件标签行（关闭 ✕、右键菜单、中键） | ✅ 标签与 ✕ 已见；右键/中键未自动化验证 | `04-editor.png` |
 | 7 | 底部状态栏（行/列、缩进、UTF-8、语言、保存状态、问题数、终端） | ✅ | `04-editor.png` |
 | 8 | 终端默认会话名 Windows 显示 `cmd`（非 bash） | ✅ | `01-home.png` 底部「cmd · 运行中」 |
-| 9 | 全局快捷键：`F1` 快捷键说明、`Ctrl+B` 侧栏、`Ctrl+`` 终端 | ✅ | `09-shortcuts.png`、`11-sidebar-hidden.png` |
+| 9 | 全局快捷键：`F1` 快捷键说明 ✅；`Ctrl+B` / `Ctrl+N` / `Ctrl+,` 在本机自动化中未复现（中文 IME 可能抢占） | ⚠️ 部分 | `09-shortcuts.png` |
 | 10 | 快捷键说明对话框分组 + 键位 | ✅ | `09-shortcuts.png` |
 | 11 | 窗口最小尺寸 960×640（缩到 900 宽被夹到 960） | ✅ | `07-editor-960.png` + resize 日志 |
 | 12 | 窗口几何恢复（关闭重开回到 1902×1191@(969,444)） | ✅ | 每次启动日志 `bounds=...` |
 | 13 | 1500×900 宽屏无溢出、侧栏与编辑区正常 | ✅ | `08-editor-1500.png` |
+| 13b | Git 侧栏标签、终端展开面板 | ⚠️ 未取得可视化证据（探针点击不可靠）；代码路径：`DesktopSidebar` 的 `versionControl` 槽位 + `TerminalHost` | — |
 | 14 | 窄窗口（<600 逻辑像素）对话框回退为底部抽屉 | ⚠️ 未真实复现（最小窗口 960 宽，达不到） | — |
 | 15 | 桌面对话框替代底部抽屉（任务/构建、Git 差异、组件版本、终端外观、诊断） | ✅ 代码层面统一走 `showAdaptiveSheet`/有界对话框 | 见 `docs/windows-port/desktop-shortcuts.md` §3 |
 | 16 | 原生文件夹选择器（打开/导入工程、另存为产物） | ✅ 接入 `file_selector`（Windows 原生）；真实选择框未在本次脚本中点击 | `lib/services/native_file_service.dart` |
-| 17 | 关闭窗口先保存缓冲区再退出 | ✅ 代码路径 `window_frame._handleWindowClose`→`AppCommands.setBeforeClose` | 未做「脏缓冲关窗」实测 |
+| 17 | 关闭窗口先保存缓冲区再退出 | ⚠️ 代码路径已通（`window_frame._handleWindowClose` → `AppCommands.setBeforeClose`），未做「脏缓冲关窗」实测 | — |
 | 18 | 设置页桌面两栏 | ❌ 未做（仍是单栏 + 桌面宽度/紧凑密度） | — |
 | 19 | 环境页组件表 | ⚠️ 沿用已有 ≥840 双列布局，未改成表格 | — |
 | 20 | `Ctrl+N` / `Ctrl+,` 实测 | ⚠️ 本机中文输入法激活时未触发（`F1`/`Ctrl+B` 正常），疑为 IME 抢占，待真机复验 | `m1-ctrl-n.png`、`m2-ctrl-comma.png` 与基线同图 |
