@@ -95,7 +95,7 @@ class GitProcess {
 
   /// 解析出来的 git 可执行文件绝对路径（或裸 `git`）。
   String get executable {
-    if (_exe != null && _exe!.isNotEmpty) return _exe!;
+    if (_exe != null && _exe.isNotEmpty) return _exe;
     try {
       final bundled = toolchain.gitExe;
       if (File(bundled).existsSync()) return bundled;

@@ -86,7 +86,7 @@ class GitCredentials {
           await file.delete();
         } catch (_) {}
       } else {
-        await file.writeAsString(kept.join('\n') + '\n');
+        await file.writeAsString('${kept.join('\n')}\n');
         keepHelper = true;
       }
     }
@@ -189,7 +189,7 @@ class GitCredentials {
         : <String>[];
     kept.add(credentialLine(host: host, username: username, token: token));
     if (!file.parent.existsSync()) file.parent.createSync(recursive: true);
-    await file.writeAsString(kept.join('\n') + '\n');
+    await file.writeAsString('${kept.join('\n')}\n');
   }
 
   Future<List<String>> _readLines(File file) async {

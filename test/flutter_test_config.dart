@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flit/core/host_platform.dart';
-import 'package:flutter_test/flutter_test.dart';
 
 /// 测试默认按 Android 语义运行。
 ///

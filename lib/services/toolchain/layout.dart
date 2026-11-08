@@ -26,16 +26,32 @@ class ToolchainLayout {
     String? pubHostedUrl,
     String? flutterStorageBaseUrl,
     String? adoptiumBaseUrl,
+    String? jdkMirrorBaseUrl,
+    String? androidSdkRepoBase,
   }) : home = normalizeHome(home),
        windows = windows ?? Platform.isWindows,
        baseEnvironment = Map<String, String>.unmodifiable(
          baseEnvironment ?? Platform.environment,
        ),
        _proxyEnvironment = proxyEnvironment,
-       pubHostedUrl = pubHostedUrl ?? defaultPubHostedUrl,
+       pubHostedUrl =
+           pubHostedUrl ??
+           _runtimeOverride('FLIT_PUB_HOSTED_URL', defaultPubHostedUrl),
        flutterStorageBaseUrl =
-           flutterStorageBaseUrl ?? defaultFlutterStorageBaseUrl,
-       adoptiumBaseUrl = adoptiumBaseUrl ?? defaultAdoptiumBaseUrl;
+           flutterStorageBaseUrl ??
+           _runtimeOverride(
+             'FLIT_FLUTTER_STORAGE_BASE_URL',
+             defaultFlutterStorageBaseUrl,
+           ),
+       adoptiumBaseUrl =
+           adoptiumBaseUrl ??
+           _runtimeOverride('FLIT_ADOPTIUM_BASE', defaultAdoptiumBaseUrl),
+       jdkMirrorBaseUrl =
+           jdkMirrorBaseUrl ??
+           _runtimeOverride('FLIT_JDK_MIRROR_BASE', defaultJdkMirrorBase),
+       androidSdkRepoBase =
+           androidSdkRepoBase ??
+           _runtimeOverride('FLIT_ANDROID_SDK_BASE', defaultAndroidSdkBase);
 
   /// Flutter 官方 Windows 清单 / 产物镜像（可配，默认国内镜像）。
   static const String defaultFlutterStorageBaseUrl = String.fromEnvironment(
@@ -49,11 +65,29 @@ class ToolchainLayout {
     defaultValue: 'https://pub.flutter-io.cn',
   );
 
-  /// Adoptium（Temurin JDK）API；国内可能需要换镜像。
+  /// Adoptium（Temurin JDK）API；国内直连常超时，镜像优先，API 作回退。
   static const String defaultAdoptiumBaseUrl = String.fromEnvironment(
     'FLIT_ADOPTIUM_BASE',
     defaultValue: 'https://api.adoptium.net',
   );
+
+  /// JDK 的国内镜像（TUNA 的 Adoptium 目录镜像：按目录结构直接取 zip）。
+  /// 设为空字符串可关闭，只用 Adoptium 官方 API。
+  static const String defaultJdkMirrorBase = String.fromEnvironment(
+    'FLIT_JDK_MIRROR_BASE',
+    defaultValue: 'https://mirrors.tuna.tsinghua.edu.cn/Adoptium',
+  );
+
+  /// Android SDK 仓库根：官方 `dl.google.com` 在国内常不可达，
+  /// 默认走腾讯云镜像（与官方 `repository2-3.xml` 同构、逐包 sha1 校验）。
+  /// 设为 `https://dl.google.com/android/repository`（或空串）即回官方源。
+  static const String defaultAndroidSdkBase = String.fromEnvironment(
+    'FLIT_ANDROID_SDK_BASE',
+    defaultValue: 'https://mirrors.cloud.tencent.com/AndroidSDK',
+  );
+
+  static const String officialAndroidSdkBase =
+      'https://dl.google.com/android/repository';
 
   /// Google 官方 cmdline-tools 构建号（无公开摘要，升级时同步改 URL）。
   static const String cmdlineToolsBuild = '13114758';
@@ -69,6 +103,59 @@ class ToolchainLayout {
   final String pubHostedUrl;
   final String flutterStorageBaseUrl;
   final String adoptiumBaseUrl;
+
+  /// JDK 目录镜像根（TUNA 的 Adoptium 镜像）；空串表示不用镜像。
+  final String jdkMirrorBaseUrl;
+
+  /// Android SDK 仓库根；空串等价于官方源。
+  final String androidSdkRepoBase;
+
+  /// 非镜像（官方）Flutter 产物根，用于镜像失败后回退。
+  static const String officialFlutterStorageBaseUrl =
+      'https://storage.googleapis.com';
+
+  /// 归一化后的 JDK 镜像根（去尾斜杠；空串表示关闭）。
+  String get jdkMirrorUrl => _trimSlash(jdkMirrorBaseUrl);
+
+  /// 归一化后的 Android SDK 仓库根；空串 → 官方源。
+  String get androidSdkRepo =>
+      _trimSlash(
+        androidSdkRepoBase.isEmpty ? officialAndroidSdkBase : androidSdkRepoBase,
+      );
+
+  /// 是否在用国内 Android SDK 镜像（决定是否注入 `SDK_TEST_BASE_URL`）。
+  bool get androidSdkMirrored => androidSdkRepo != officialAndroidSdkBase;
+
+  String get cmdlineToolsFileName =>
+      'commandlinetools-win-${cmdlineToolsBuild}_latest.zip';
+
+  /// 实际使用的 cmdline-tools 下载地址（镜像优先）。
+  String get cmdlineToolsUrl => '$androidSdkRepo/$cmdlineToolsFileName';
+
+  /// 官方 cmdline-tools 地址，镜像失败时回退。
+  String get officialCmdlineToolsUrl =>
+      '$officialAndroidSdkBase/$cmdlineToolsFileName';
+
+  /// `sdkmanager` 的仓库重定向（`SDK_TEST_BASE_URL`）。
+  ///
+  /// 只接受**以 `/` 结尾的目录 URL**：写成别的前缀时 sdklib 会打印
+  /// `Warning: Ignoring invalid SDK_TEST_BASE_URL` 并静默回退官方源——
+  /// 这正是「以为走了镜像、其实在连 dl.google.com」的坑。
+  /// 生效后包元数据、包本体与 sha1 校验都来自该目录。
+  String? get sdkRepoOverride =>
+      androidSdkMirrored ? '$androidSdkRepo/' : null;
+
+  static String _trimSlash(String value) =>
+      value.trim().replaceAll(RegExp(r'/+$'), '');
+
+  /// 运行期环境变量优先于编译期默认值（便于高级用户不改构建直接换源）。
+  static String _runtimeOverride(String key, String fallback) {
+    try {
+      final value = Platform.environment[key];
+      if (value != null && value.isNotEmpty) return value;
+    } catch (_) {}
+    return fallback;
+  }
 
   static String defaultHome() {
     final override = Platform.environment['FLIT_DESKTOP_HOME'];
@@ -142,8 +229,26 @@ class ToolchainLayout {
   String get cmdlineToolsDir => join(join(sdkDir, 'cmdline-tools'), 'latest');
   String get sdkManagerBat =>
       join(join(cmdlineToolsDir, 'bin'), 'sdkmanager$_bat');
-  String get sdkManagerJar =>
+
+  /// 新版 cmdline-tools（build 13114758 起）的 classpath jar。
+  String get sdkManagerClasspathJar =>
+      join(join(cmdlineToolsDir, 'lib'), 'sdkmanager-classpath.jar');
+
+  /// 旧版 cmdline-tools 的 jar 名，仅作兼容回退。
+  String get sdkManagerLegacyJar =>
       join(join(cmdlineToolsDir, 'lib'), 'sdkmanager.jar');
+
+  /// 兼容旧调用点：优先返回**实际存在**的 jar，其次返回新版路径。
+  ///
+  /// 注意：不要把这里的返回值当成「安装完成判据」——目录布局随
+  /// cmdline-tools 版本变化，判据请用 [SdkManager.available]。
+  String get sdkManagerJar {
+    final classpath = sdkManagerClasspathJar;
+    if (File(classpath).existsSync()) return classpath;
+    final legacy = sdkManagerLegacyJar;
+    if (File(legacy).existsSync()) return legacy;
+    return classpath;
+  }
   String get buildToolsDir => join(sdkDir, 'build-tools');
   String get platformsDir => join(sdkDir, 'platforms');
   String get ndkDir => join(sdkDir, 'ndk');
@@ -151,7 +256,16 @@ class ToolchainLayout {
 
   String get flutterBinDir => join(flutterDir, 'bin');
   String get flutterBat => join(flutterBinDir, 'flutter$_bat');
+
+  /// 旧版 Flutter 的版本文件（`<flutter>/version`）。
   String get flutterVersionFile => join(flutterDir, 'version');
+
+  /// 新版 Flutter（3.x 后期起）的版本清单，`version` 文件已被移除。
+  String get flutterVersionJson => join(flutterCacheDir, 'flutter.version.json');
+
+  /// SDK 自带的 Dart 可执行文件（zip 内就有，不需要预热）。
+  String get flutterDartExe =>
+      join(join(join(flutterCacheDir, 'dart-sdk'), 'bin'), 'dart$_exe');
   String get flutterCacheDir => join(flutterBinDir, 'cache');
   String get flutterToolsStamp => join(flutterCacheDir, 'flutter_tools.stamp');
   String get flutterToolsSnapshot =>
@@ -228,6 +342,12 @@ class ToolchainLayout {
     environment['PUB_HOSTED_URL'] = pubHostedUrl;
     environment['FLUTTER_STORAGE_BASE_URL'] = flutterStorageBaseUrl;
     environment['FLIT_GH_PROXY'] = GithubMirror.prefix;
+    final sdkRepoOverride = this.sdkRepoOverride;
+    if (sdkRepoOverride == null) {
+      environment.remove('SDK_TEST_BASE_URL');
+    } else {
+      environment['SDK_TEST_BASE_URL'] = sdkRepoOverride;
+    }
     environment[pathKey] = entries.join(pathSeparator);
     environment.addAll(_proxyEnvironment?.call() ?? const <String, String>{});
     environment.addAll(extra);
@@ -242,5 +362,6 @@ class ToolchainLayout {
     'ADB_EMU',
     'PUB_HOSTED_URL',
     'FLUTTER_STORAGE_BASE_URL',
+    'SDK_TEST_BASE_URL',
   ];
 }

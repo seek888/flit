@@ -47,15 +47,57 @@ Windows 版**不依赖**你预先安装 Flutter/Android SDK/JDK，也**不会**�
 3. **Flutter 工具链**：Git（MinGit 或系统 git）→ Flutter SDK → **预热**（首次
    `flutter --version` 会下载 Dart SDK/引擎工件，可能需要几分钟，这一步是真实阶段）。
 
-- 下载会显示进度、校验 SHA-256（Flutter manifest 提供摘要；其它来源用固定/记录摘要），
-  缓存包校验不通过会重下。
-- 国内网络：GitHub 相关下载自动走镜像前缀（与 Android 版一致的 `GithubMirror`），
-  Flutter 走 `FLUTTER_STORAGE_BASE_URL`（默认 `storage.flutter-io.cn`），
-  pub 走 `PUB_HOSTED_URL`。
+- 下载会显示进度、校验摘要（Flutter 清单自带 SHA-256；Android SDK 包用镜像
+  `repository2-3.xml` 里的 sha1；其余来源记录首次摘要做 TOFU），缓存包校验
+  不通过会重下，半截包不会当成完整缓存。
 - 系统里若已有 git，会优先「采用」系统 git（不重复安装）；JDK/Android SDK/Flutter
   固定用私有版本，保证版本可预期。
 - NDK / CMake / Gradle 在桌面端标为「按需安装」：项目需要时由构建前的组件检查
   提示并用 `sdkmanager` 补齐。
+
+### 2.1 下载源与国内镜像（默认即镜像，失败自动回退）
+
+桌面端所有下载都在 `lib/services/toolchain/layout.dart` 一处配置，默认全部走
+国内镜像，并保留「镜像失败 → 官方源」的回退链。日志第一行会打印本次实际使用的
+下载源，排障先看它。
+
+| 组件 | 默认源（国内） | 回退 | 构建期覆盖（`--dart-define`） | 运行期覆盖（同名环境变量） |
+| --- | --- | --- | --- | --- |
+| Temurin JDK 17 | 清华 TUNA `mirrors.tuna.tsinghua.edu.cn/Adoptium`（目录镜像） | `api.adoptium.net` 官方 API（带 sha256/大小） | `FLIT_JDK_MIRROR_BASE`（空 = 只用官方） | 同左 |
+| Android SDK（cmdline-tools + platform-tools / platforms / build-tools / NDK / CMake） | 腾讯云 `mirrors.cloud.tencent.com/AndroidSDK`（与官方 `repository2-3.xml` 同构，逐包 sha1） | `dl.google.com/android/repository` | `FLIT_ANDROID_SDK_BASE`（写官方地址 = 官方源；运行期空值会被忽略） | 同左 |
+| Flutter SDK | `storage.flutter-io.cn`（清单自带 SHA-256，强校验） | `storage.googleapis.com` | `FLIT_FLUTTER_STORAGE_BASE_URL` | 同左 |
+| pub 包 | `pub.flutter-io.cn` | `pub.dev` | `FLIT_PUB_HOSTED_URL` | 同左 |
+| Git（MinGit） | GitHub 加速前缀，默认 `gh-proxy.com`，自动追加 `ghfast.top`、`ghproxy.net` 作候选 | 直连 `api.github.com` / `github.com` | `FLIT_GH_PROXY`（可写多个，逗号分隔；空 = 只直连） | 同左 |
+| Gradle 发行版（构建 APK 时） | 腾讯云 `mirrors.cloud.tencent.com/gradle`（构建前按工程的 wrapper 版本预置到 `gradle-home`） | 阿里云 macports 镜像 → `services.gradle.org` | `FLIT_GRADLE_MIRROR_BASE` | 同左 |
+
+要点：
+
+- **运行期环境变量优先于编译期默认值**：不重新构建也能换源，例如
+  `set FLIT_ANDROID_SDK_BASE=https://dl.google.com/android/repository`。
+- Android SDK 的镜像不是「换个 URL 下载」那么简单：`sdkmanager` 通过
+  `SDK_TEST_BASE_URL` 才知道仓库根，而且**只接受带尾斜杠的目录 URL**
+  （写成别的形式时它会打印 `Warning: Ignoring invalid SDK_TEST_BASE_URL`
+  并静默回退官方源，日志里会看到这条警告）。桌面端在子进程环境里注入
+  `SDK_TEST_BASE_URL=<镜像根>/`，因此**包元数据、包本体和 sha1 校验都来自镜像**，
+  与直接连 Google 等价。
+- GitHub 前缀是可回退列表：某个公共代理被限流/下线时自动试下一个，最后直连兜底。
+- 官方源仍然可用：用 `--official` 跑验证工具，或把上述变量设为官方地址/空值。
+
+### 2.2 验证工具（真实网络自检）
+
+`tool/verify_toolchain.dart` 会把工具链装进指定目录（默认系统临时目录），真实执行
+`java -version` / `flutter --version` / `adb version` / `git --version` /
+`sdkmanager --version`，最后打印结构判据和 `__STAGE__/__VER__` marker：
+
+```powershell
+dart tool/verify_toolchain.dart --home D:\flit-verify\home       # 全量，走国内镜像
+dart tool/verify_toolchain.dart --stages jdk,sdk --official      # 只验官方源回退
+dart tool/verify_toolchain.dart --home D:\flit-verify\home --clean
+```
+
+退出码 `0` 表示环境就绪；`1` 表示有阶段失败（日志里会写清是哪个源失败、回退到
+哪个源又失败）。这个脚本只依赖 `dart:io`，可以直接 `dart` 运行，不需要先
+`flutter pub get`。
 
 ## 3. 创建 / 打开工程
 
@@ -113,6 +155,12 @@ Windows 版**不依赖**你预先安装 Flutter/Android SDK/JDK，也**不会**�
 - 构建前会做**纯 Dart 组件检查**（等价 Android 版的 `android_components.sh`）：
   缺 `build-tools`/`platforms`/`platform-tools`/NDK/CMake 时给出确认框，并可用
   `sdkmanager` 自动补齐（不再执行 bash 脚本，Windows 上没有 WSL 也能用）。
+- 构建前还会**预置工程所需的 Gradle 发行版**：读取工程里的
+  `android/gradle/wrapper/gradle-wrapper.properties`，按 Gradle Wrapper 的规则
+  （`<gradle-home>/wrapper/dists/<发行版名>/<base36(MD5(url))>/`）从国内镜像下载、
+  解压并写入 `<发行版名>.zip.ok` 标记。这样 `gradlew` 直接命中缓存，不会去连
+  `services.gradle.org`——国内网络下这是 `flutter build apk` 最常见的失败点。
+  已经在缓存里的发行版会跳过（不联网）。
 - Web 构建前若工程没有 `web/` 目录，Flit 会先在 Dart 侧执行
   `flutter create --platforms=web .`。
 - 产物会显示成文件卡：APK 可「打开所在文件夹」「导出副本」；连接了设备时还可
@@ -164,20 +212,67 @@ Android APP 自身的发布仍在 `.github/workflows/android-release.yml`，两�
 
 ## 9.5 验证状态（这个分支实际跑过什么）
 
+### 9.5.1 CI（GitHub Actions，windows-latest）
+
 | 项目 | 结果 | 说明 |
 | --- | --- | --- |
-| `flutter analyze`（windows-latest，Flutter 3.47.8） | ✅ 0 issue | 新增 desktop 代码与测试全部通过 |
+| `flutter analyze`（Flutter 3.47.8） | ✅ 0 issue | 新增 desktop 代码与测试全部通过 |
 | `flutter build windows --release` | ✅ | 产物含 `flit.exe`、`flutter_windows.dll`、`flutter_pty.dll`、运行库 DLL |
 | Inno Setup 安装包 | ✅ | `FlitSetup-1.0.0-preview.2-x64.exe`（per-user，含中文向导）随 Release 发布 |
 | Windows 宿主构建链冒烟 | ✅ | 在 windows-latest 上用最小 Flutter 工程真跑 `flutter build web --release` 与 `flutter build apk --debug`，产物存在 |
 | Android APK 发布工作流 | ✅ 未改动 | `android-release.yml` 保持原样，只共享 Flutter 版本号 |
 | 全量 `flutter test` | 414 passed / 17 failed / 3 skipped | 失败项是平台假设差异（非阻断）；见下 |
 
-**没有在真机 Windows 上验证过的**（本仓库的 CI 跑在 GitHub 托管的 Windows 虚拟机上，
-没有交互式桌面与真实网络/杀软环境）：
+### 9.5.2 真机验证：国内网络从零安装 + 构建（2026-11-08）
 
-- 首次「一键安装」的完整下载/解压/预热流程（约 2~3 GB，依赖你到 GitHub/Flutter/Google/Adoptium 的网络）。
-- 安装后 `flutter build apk` 从 Flit UI 触发的端到端流程（命令行链路已由冒烟 job 证明）。
+环境：Windows 11（25H2）；`services.gradle.org`、`api.adoptium.net` 直连不可用，
+Flutter/腾讯云/清华/阿里云镜像可达（典型国内家用网络）。
+
+**① 一键安装（真实网络）** —— `dart tool/verify_toolchain.dart --home <目录>`
+
+| 阶段 | 实际下载源 | 结果 |
+| --- | --- | --- |
+| JDK 17 | 清华 TUNA Adoptium 目录镜像 | ✅ Temurin 17.0.20.1（182 MB），`java -version` 正常 |
+| Android SDK | 腾讯云 AndroidSDK 镜像（`SDK_TEST_BASE_URL` 重定向；元数据/包本体/sha1 都来自镜像） | ✅ cmdline-tools 13114758、platform-tools 37.0.1、platforms;android-36、build-tools;36.0.0；许可接受完成 |
+| Git | 采用系统 Git（不重复下载 MinGit） | ✅ 2.51.1 |
+| Flutter | `storage.flutter-io.cn` | ✅ 3.47.9（1.81 GB），SHA-256 与清单 `d8e2b597…` 一致 |
+| 预热 | 同上镜像（Dart SDK / 引擎产物） | ✅ 3.47.9 |
+| 结构判据 | — | ✅ 8 个 `__STAGE__` 全 DONE，环境判为就绪 |
+
+`flutter doctor -v`（使用该私有工具链的环境变量执行）：Android toolchain ✅
+（Platform android-36 / build-tools 36.0.0 / licenses accepted）、Visual Studio ✅、
+Network resources ✅。
+
+**② APK 构建（含 Gradle 发行版镜像）**
+
+| 项目 | 结果 | 说明 |
+| --- | --- | --- |
+| Gradle 9.3.1 发行版 | ✅ | 直连 `services.gradle.org` 失败；构建前预置从腾讯云 gradle 镜像下载 234 MB，按 wrapper 规则落到 `gradle-home/wrapper/dists/…`（含 `.zip.ok`），`gradlew --version` 命中缓存 |
+| `flutter build apk --debug --target-platform android-arm64` | ✅ | 首轮 660 s（AGP 依赖 + AGP 自动补 NDK r28c），增量 45 s；产物 `app-debug.apk` 77 MB |
+
+**③ 代码质量**
+
+| 项目 | 结果 |
+| --- | --- |
+| `flutter analyze`（Flutter 3.47.9） | ✅ 0 issue |
+| 全量 `flutter test` | 442 passed / 3 skipped / 10 failed；这 10 项与**未改动的基线 HEAD 完全相同**（Windows 上缺 bash、平台假设差异），非回归 |
+| 新增单测 | `toolchain_mirror_test`、`download_first_test`、`md5_test`、`gradle_wrapper_test`，以及 Flutter 新版布局的探测用例 |
+
+验证过程顺带修掉的真实问题（都会导致「装完仍判未就绪」或「构建直接失败」）：
+
+1. `SDK_TEST_BASE_URL` 只接受**带尾斜杠的目录 URL**；写成 `…/{url}` 会被静默忽略并回退
+   `dl.google.com`（日志里是 `Warning: Ignoring invalid SDK_TEST_BASE_URL`）。
+2. Flutter 3.47 起移除了 `<flutter>/version`（`omit-legacy-version-file` 特性），版本在
+   `bin/cache/flutter.version.json`；旧判据把已安装 SDK 判成 MISSING。
+3. `cmdline-tools` 的 classpath jar 是 `lib/sdkmanager-classpath.jar`（不是 `sdkmanager.jar`），
+   旧判据会让 Android SDK 阶段永远「未就绪」。
+4. Gradle Wrapper 缓存目录名是 `base36(MD5(distributionUrl))`，且必须有 `<发行版 zip>.ok`
+   标记；缺任何一项，`gradlew` 都会重新下载。
+
+**仍未在真机上验证过的**：
+
+- 从 Flit **UI** 点按钮触发的完整链路（本次用 `tool/verify_toolchain.dart` 与命令行复现了
+  同样的安装/构建步骤，UI 只多一层状态展示）。
 - 终端 ConPTY 的交互体验、中文路径限制（见第 4 节）。
 - 安装包在普通用户机器上的安装/卸载体验、SmartScreen 提示。
 
@@ -190,6 +285,7 @@ Android APP 自身的发布仍在 `.github/workflows/android-release.yml`，两�
 | --- | --- |
 | 环境页一直提示“未就绪” | 看环境页控制台输出：第一次安装需要下载约 2~3 GB；确认网络/镜像可达；「继续安装」会从断点续装 |
 | `flutter build apk` 报缺少 build-tools/platforms | 按弹窗确认自动补齐，或在环境页重新执行 Android 工具链阶段 |
+| `Gradle task assembleDebug failed` / 日志里 `ConnectException` 指向 `services.gradle.org` | 构建前的 Gradle 发行版预置没命中缓存：确认 `FLIT_GRADLE_MIRROR_BASE`（默认腾讯云 gradle 镜像）可达；镜像缺该版本时会把工程里的 `distributionUrl` 当最后一个候选直连。手动排查可看 `%LOCALAPPDATA%\FlitDesk\gradle-home\wrapper\dists\` |
 | Git push 要求输入凭据/401 | 重新粘贴 PAT（需 `repo` 权限）；确认系统时间正确；私有仓库需要 token 有对应组织授权 |
 | 中文路径下终端无输出 | 说明 PTY 无法处理非 ASCII 环境，Flit 会降级为管道会话；可在终端设置里确认 |
 | 安装包启动报缺少 `msvcp140.dll` | 安装版已内置运行库；若用便携版，安装 VC++ 2015-2022 x64 Redistributable |

@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../core/host_platform.dart';
 import '../../core/page_layout.dart';
 import '../../core/theme.dart';
 import '../../services/git_process.dart';
@@ -290,8 +289,9 @@ class _CloneProjectPageState extends State<CloneProjectPage> {
       }
       Navigator.pop(context, params.copyWith(preCloned: true));
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         setState(() => _error = context.strings.clonePreflightFailedP(error));
+      }
     }
   }
 

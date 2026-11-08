@@ -85,9 +85,13 @@ class NetProbe {
     required String githubMirrorPrefix,
     required String pubHostedUrl,
     required String flutterStorageBaseUrl,
+    String androidSdkBaseUrl = ToolchainLayout.defaultAndroidSdkBase,
+    String jdkMirrorBaseUrl = ToolchainLayout.defaultJdkMirrorBase,
   }) {
     final pub = pubHostedUrl.replaceAll(RegExp(r'/+$'), '');
     final storage = flutterStorageBaseUrl.replaceAll(RegExp(r'/+$'), '');
+    final sdkBase = androidSdkBaseUrl.replaceAll(RegExp(r'/+$'), '');
+    final jdkBase = jdkMirrorBaseUrl.replaceAll(RegExp(r'/+$'), '');
     return <NetProbeTarget>[
       (name: 'Google', url: 'https://www.google.com/generate_204'),
       (name: 'GitHub', url: 'https://github.com'),
@@ -98,6 +102,9 @@ class NetProbe {
         name: 'Flutter镜像',
         url: '$storage/flutter_infra_release/releases/releases_windows.json',
       ),
+      if (sdkBase.isNotEmpty)
+        (name: 'AndroidSDK源', url: '$sdkBase/repository2-3.xml'),
+      if (jdkBase.isNotEmpty) (name: 'JDK镜像', url: '$jdkBase/17/jdk/x64/windows/'),
       (name: 'Gradle', url: 'https://services.gradle.org/distributions/'),
       (name: 'Maven', url: 'https://repo.maven.apache.org/maven2/'),
       (

@@ -177,6 +177,28 @@ void main() {
     );
   });
 
+  test('modern Flutter layout is detected via bin/cache/flutter.version.json', () {
+    writeFile(layout.flutterBat);
+    writeFile(layout.flutterVersionJson, '{"frameworkVersion":"3.47.9"}');
+    writeFile(layout.flutterDartExe);
+    // Flutter 3.x 后期不再提供 <flutter>/version。
+    expect(File(layout.flutterVersionFile).existsSync(), isFalse);
+
+    final status = probe.inspect();
+    expect(status.flutter, isTrue);
+    expect(status.versions['flutter'], '3.47.9');
+  });
+
+  test('flutter is installed with only the SDK-bundled cache artifacts', () {
+    writeFile(layout.flutterBat);
+    writeFile(layout.flutterToolsSnapshot);
+
+    final status = probe.inspect();
+    expect(status.flutter, isTrue);
+    // 读不到版本时不撒谎：判已安装，但版本留空。
+    expect(status.versions['flutter'], isNull);
+  });
+
   test('warmup marker without a valid JSON is not treated as warmed', () {
     writeFile(layout.flutterBat);
     writeFile(layout.flutterVersionFile, '3.47.8\n');

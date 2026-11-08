@@ -14,6 +14,9 @@ import 'sdk_manager.dart';
 
 typedef JsonFetcher = Future<Object?> Function(Uri uri);
 
+/// 纯文本获取（JDK 目录镜像的 HTML 列表页需要它）。
+typedef TextFetcher = Future<String> Function(Uri uri);
+
 typedef _AdoptiumAsset = ({
   String url,
   String? sha256,
@@ -21,7 +24,14 @@ typedef _AdoptiumAsset = ({
   String version,
 });
 
-typedef _MinGitAsset = ({String url, String? sha256, int size, String version});
+typedef _JdkMirrorAsset = ({String url, String version, int? size});
+
+typedef _MinGitAsset = ({
+  List<String> urls,
+  String? sha256,
+  int size,
+  String version,
+});
 
 typedef _FlutterRelease = ({
   String url,
@@ -43,6 +53,7 @@ class ToolchainInstaller {
     required this.sdkManager,
     required this.process,
     required this.fetchJson,
+    required this.fetchText,
   });
 
   factory ToolchainInstaller({
@@ -53,6 +64,7 @@ class ToolchainInstaller {
     SdkManager? sdkManager,
     ToolchainProcessGateway? process,
     JsonFetcher? fetchJson,
+    TextFetcher? fetchText,
   }) {
     final gateway = process ?? const SystemToolchainProcess();
     return ToolchainInstaller._(
@@ -65,6 +77,7 @@ class ToolchainInstaller {
       sdkManager: sdkManager ?? SdkManager(layout: layout, process: gateway),
       process: gateway,
       fetchJson: fetchJson ?? defaultFetchJson,
+      fetchText: fetchText ?? defaultFetchText,
     );
   }
 
@@ -75,10 +88,23 @@ class ToolchainInstaller {
   final SdkManager sdkManager;
   final ToolchainProcessGateway process;
   final JsonFetcher fetchJson;
+  final TextFetcher fetchText;
 
-  String get cmdlineToolsUrl =>
-      'https://dl.google.com/android/repository/'
-      'commandlinetools-win-${ToolchainLayout.cmdlineToolsBuild}_latest.zip';
+  /// cmdline-tools 的下载候选：国内镜像 → 官方源。
+  List<String> get cmdlineToolsUrls => <String>[
+    layout.cmdlineToolsUrl,
+    if (layout.officialCmdlineToolsUrl != layout.cmdlineToolsUrl)
+      layout.officialCmdlineToolsUrl,
+  ];
+
+  /// 当前生效的下载源说明（首屏日志，排障时先看这一段）。
+  String get downloadSourceSummary =>
+      '下载源：JDK ${layout.jdkMirrorUrl.isEmpty ? layout.adoptiumBaseUrl : '${layout.jdkMirrorUrl}（清华镜像）'}'
+      ' · Android SDK ${layout.androidSdkRepo}${layout.androidSdkMirrored ? '（腾讯镜像）' : '（官方）'}'
+      ' · Flutter ${layout.flutterStorageBaseUrl}'
+      ' · pub ${layout.pubHostedUrl}'
+      ' · GitHub ${GithubMirror.prefix.isEmpty ? '直连' : GithubMirror.prefix}'
+      '${GithubMirror.prefixes.length > 1 ? '（共 ${GithubMirror.prefixes.length} 个候选）' : ''}';
 
   // ---------- 编排 ----------
 
@@ -90,6 +116,7 @@ class ToolchainInstaller {
   }) async* {
     Directory(layout.home).createSync(recursive: true);
     Directory(layout.cacheDir).createSync(recursive: true);
+    yield downloadSourceSummary;
     yield '[1/5] 准备 JDK 17 ...';
     yield* installJdk();
     if (androidSdk) {
@@ -135,27 +162,51 @@ class ToolchainInstaller {
     }
 
     final archivePath = layout.cacheFile('jdk17.zip');
-    _AdoptiumAsset? metadata;
-    try {
-      metadata = await _adoptiumAsset();
-      yield 'Temurin JDK ${metadata.version}（${_formatBytes(metadata.size)}）';
-    } catch (error) {
-      final cached = File(archivePath);
-      final cachedUsable =
-          cached.existsSync() &&
-          cached.lengthSync() >= Downloader.minimumCompleteSize;
-      if (!cachedUsable) {
-        if (error is ToolchainException) rethrow;
-        throw ToolchainException('无法解析 Adoptium JDK 下载信息：$error', cause: error);
+    _JdkMirrorAsset? mirror;
+    _AdoptiumAsset? official;
+
+    // 优先走国内目录镜像（api.adoptium.net 在国内经常直接超时）。
+    if (layout.jdkMirrorUrl.isNotEmpty) {
+      try {
+        mirror = await _jdkMirrorAsset();
+        yield 'Temurin JDK ${mirror.version}'
+            '${mirror.size == null ? '' : '（${_formatBytes(mirror.size)}）'}，'
+            '来自清华 TUNA 镜像';
+      } catch (error) {
+        yield 'JDK 镜像不可用（$error），改用 Adoptium 官方 API';
       }
-      yield '无法获取 JDK 元数据（$error），使用已缓存安装包（未做内容校验）';
+    }
+
+    // 镜像不可用时回退官方 API（同时拿到 sha256/大小，可做内容校验）。
+    if (mirror == null) {
+      try {
+        official = await _adoptiumAsset();
+        yield 'Temurin JDK ${official.version}'
+            '（${_formatBytes(official.size)}），来自 Adoptium 官方';
+      } catch (error) {
+        final cached = File(archivePath);
+        final cachedUsable =
+            cached.existsSync() &&
+            cached.lengthSync() >= Downloader.minimumCompleteSize;
+        if (!cachedUsable) {
+          if (error is ToolchainException) rethrow;
+          throw ToolchainException(
+            '无法解析 Adoptium JDK 下载信息：$error',
+            cause: error,
+          );
+        }
+        yield '无法获取 JDK 元数据（$error），使用已缓存安装包（未做内容校验）';
+      }
     }
 
     yield* _downloadLogged(
-      url: metadata?.url,
+      urls: <String>[
+        if (mirror != null) mirror.url,
+        if (official != null) official.url,
+      ],
       destination: archivePath,
-      sha256: metadata?.sha256,
-      expectedSize: metadata?.size,
+      sha256: official?.sha256,
+      expectedSize: official?.size,
       label: 'JDK 17',
     );
     yield '解压 JDK ...';
@@ -170,7 +221,51 @@ class ToolchainInstaller {
         'JDK 解压后结构不完整（缺少 bin/java 或 release）：${layout.jdkDir}',
       );
     }
-    yield 'JDK 完成${probe.readJdkVersion() == null ? '' : '（${probe.readJdkVersion()}）'}';
+    final runtime = await _javaVersion();
+    if (runtime == null) {
+      throw ToolchainException(
+        'JDK 解压后无法运行 java -version：${layout.javaExe}（安装包可能损坏）',
+      );
+    }
+    yield 'JDK 完成（$runtime）';
+  }
+
+  /// 目录镜像里的 JDK 17 Windows x64 zip（TUNA 只保留最新 build）。
+  Future<_JdkMirrorAsset> _jdkMirrorAsset() async {
+    final base = layout.jdkMirrorUrl;
+    final directoryUrl = '$base/17/jdk/x64/windows';
+    final html = await fetchText(Uri.parse('$directoryUrl/'));
+    final parsed = parseJdkMirrorListing(html, baseUrl: directoryUrl);
+    if (parsed == null) {
+      throw ToolchainException('镜像目录里没有 JDK 17 Windows x64 zip：$directoryUrl/');
+    }
+    return (url: parsed.url, version: parsed.version, size: parsed.size);
+  }
+
+  /// 解析 Adoptium 目录镜像的 HTML 列表，取最高版本的 zip。
+  ///
+  /// TUNA 等站点的目录页是 nginx fancy-index：文件名在 `href` 里，
+  /// `OpenJDK17U-jdk_x64_windows_hotspot_17.0.20.1_1.zip` 即
+  /// `17.0.20.1+1`（下划线是 build 号）。
+  static ({String url, String version, int? size})? parseJdkMirrorListing(
+    String html, {
+    required String baseUrl,
+  }) {
+    final pattern = RegExp(
+      r'href="(OpenJDK[^"]*?-jdk_x64_windows_hotspot_([^"/]+?)\.zip)"',
+    );
+    final cleanBase = baseUrl.replaceAll(RegExp(r'/+$'), '');
+    final found = <({String url, String version})>[];
+    for (final match in pattern.allMatches(html)) {
+      final name = match.group(1)!;
+      final raw = match.group(2)!;
+      final version = raw.replaceAll('_', '+');
+      found.add((url: '$cleanBase/$name', version: version));
+    }
+    if (found.isEmpty) return null;
+    found.sort((a, b) => _compareVersions(a.version, b.version));
+    final best = found.last;
+    return (url: best.url, version: best.version, size: null);
   }
 
   Future<_AdoptiumAsset> _adoptiumAsset() async {
@@ -219,7 +314,7 @@ class ToolchainInstaller {
   // ---------- cmdline-tools ----------
 
   Stream<String> installCmdlineTools() async* {
-    if (File(layout.sdkManagerJar).existsSync() &&
+    if (sdkManager.classpathJar != null &&
         File(layout.sdkManagerBat).existsSync()) {
       yield 'cmdline-tools 已就绪，跳过';
       return;
@@ -230,9 +325,10 @@ class ToolchainInstaller {
     }
     final archivePath = layout.cacheFile('cmdline-tools.zip');
     yield '下载 Android 命令行工具（build ${ToolchainLayout.cmdlineToolsBuild}；'
+        '源：${layout.androidSdkRepo}；'
         'Google 未提供官方 SHA-256，使用大小 + 首次摘要记录校验）...';
     yield* _downloadLogged(
-      url: cmdlineToolsUrl,
+      urls: cmdlineToolsUrls,
       destination: archivePath,
       label: 'cmdline-tools',
     );
@@ -245,6 +341,12 @@ class ToolchainInstaller {
     if (!File(layout.sdkManagerBat).existsSync()) {
       throw ToolchainException(
         'cmdline-tools 解压后缺少 bin/sdkmanager.bat：${layout.cmdlineToolsDir}',
+      );
+    }
+    if (sdkManager.classpathJar == null) {
+      throw ToolchainException(
+        'cmdline-tools 解压后缺少 lib/sdkmanager-classpath.jar：'
+        '${layout.cmdlineToolsDir}（安装包可能不完整）',
       );
     }
     yield 'cmdline-tools 完成';
@@ -366,7 +468,7 @@ class ToolchainInstaller {
     yield '下载 MinGit ${metadata.version}（${_formatBytes(metadata.size)}）...';
     final archivePath = layout.cacheFile('mingit.zip');
     yield* _downloadLogged(
-      url: metadata.url,
+      urls: metadata.urls,
       destination: archivePath,
       sha256: metadata.sha256,
       expectedSize: metadata.size > 0 ? metadata.size : null,
@@ -390,19 +492,9 @@ class ToolchainInstaller {
   }
 
   Future<_MinGitAsset> _minGitAsset() async {
-    final apiUrl = GithubMirror.wrap(
-      'https://api.github.com/repos/git-for-windows/git/releases/latest',
-    );
-    final Object? data;
-    try {
-      data = await fetchJson(Uri.parse(apiUrl));
-    } catch (error) {
-      throw ToolchainException(
-        '无法获取 MinGit 下载地址（GitHub API 经镜像 ${GithubMirror.prefix} 仍失败）：'
-        '$error。可安装系统 Git 后重试。',
-        cause: error,
-      );
-    }
+    const apiUrl =
+        'https://api.github.com/repos/git-for-windows/git/releases/latest';
+    final data = await _fetchJsonMirrored(apiUrl, label: 'MinGit 版本信息');
     if (data is! Map) {
       throw ToolchainException('MinGit 版本信息格式无效：$apiUrl');
     }
@@ -424,7 +516,7 @@ class ToolchainInstaller {
           ? digest.substring(7)
           : null;
       return (
-        url: GithubMirror.wrap(rawUrl),
+        urls: GithubMirror.candidates(rawUrl),
         sha256: sha256,
         size: asset['size'] as int? ?? 0,
         version: tag.replaceFirst(RegExp(r'^v'), ''),
@@ -466,8 +558,9 @@ class ToolchainInstaller {
     final release = _selectFlutterRelease(manifest, version: version);
     yield 'Flutter ${release.version}（Windows x64）';
     final archivePath = layout.cacheFile(release.archiveName);
+    final urls = <String>[release.url, _officialFlutterUrl(release.url)];
     yield* _downloadLogged(
-      url: release.url,
+      urls: urls,
       destination: archivePath,
       sha256: release.sha256,
       expectedSize: release.size,
@@ -489,24 +582,94 @@ class ToolchainInstaller {
   }
 
   Future<Map<String, dynamic>> _flutterManifest() async {
-    final base = layout.flutterStorageBaseUrl.replaceAll(RegExp(r'/+$'), '');
-    final uri = Uri.parse(
-      '$base/flutter_infra_release/releases/releases_windows.json',
-    );
-    final Object? data;
-    try {
-      data = await fetchJson(uri);
-    } catch (error) {
-      throw ToolchainException(
-        '无法获取 Flutter 版本清单（$uri）：$error。'
-        '可通过 FLIT_FLUTTER_STORAGE_BASE_URL 配置镜像后重试。',
-        cause: error,
+    final mirror = layout.flutterStorageBaseUrl.replaceAll(RegExp(r'/+$'), '');
+    const official = ToolchainLayout.officialFlutterStorageBaseUrl;
+    final bases = <String>[mirror, if (mirror != official) official];
+    final failures = <String>[];
+    for (final base in bases) {
+      final uri = Uri.parse(
+        '$base/flutter_infra_release/releases/releases_windows.json',
       );
+      try {
+        final data = await fetchJson(uri);
+        if (data is Map) {
+          return Map<String, dynamic>.from(data);
+        }
+        failures.add('$uri（清单格式无效）');
+      } catch (error) {
+        failures.add('$uri（$error）');
+      }
     }
-    if (data is! Map) {
-      throw ToolchainException('Flutter 版本清单格式无效：$uri');
+    throw ToolchainException(
+      '无法获取 Flutter 版本清单（已尝试 ${bases.length} 个源）：\n'
+      '${failures.join('\n')}',
+    );
+  }
+
+  /// 官方 Flutter 产物地址（镜像下载失败时回退）。
+  String _officialFlutterUrl(String url) {
+    final mirror = layout.flutterStorageBaseUrl.replaceAll(RegExp(r'/+$'), '');
+    const official = ToolchainLayout.officialFlutterStorageBaseUrl;
+    if (mirror.isNotEmpty &&
+        mirror != official &&
+        url.startsWith(mirror)) {
+      return '$official${url.substring(mirror.length)}';
     }
-    return Map<String, dynamic>.from(data);
+    return url;
+  }
+
+  /// 带多镜像回退的 JSON 获取（GitHub API 在国内常被限流/超时）。
+  Future<Object?> _fetchJsonMirrored(String url, {required String label}) async {
+    final candidates = GithubMirror.candidates(url);
+    final failures = <String>[];
+    for (final candidate in candidates) {
+      try {
+        return await fetchJson(Uri.parse(candidate));
+      } catch (error) {
+        failures.add('$candidate（$error）');
+      }
+    }
+    throw ToolchainException(
+      '无法获取$label（已尝试 ${candidates.length} 个源）：\n${failures.join('\n')}',
+    );
+  }
+
+  /// `java -version`（输出在 stderr）→ 版本号；不能执行返回 null。
+  Future<String?> _javaVersion() async {
+    if (!File(layout.javaExe).existsSync()) return null;
+    try {
+      final result = await process.run(
+        layout.javaExe,
+        const <String>['-version'],
+        environment: layout.childEnvironment(),
+        timeout: const Duration(minutes: 2),
+      );
+      final text = '${result.stdout}${result.stderr}';
+      final match = RegExp(
+        r'version "([^"]+)"',
+      ).firstMatch(text);
+      return match?.group(1);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 版本号比较（`17.0.20.1+1` 这种按数字段比较）。
+  static int _compareVersions(String a, String b) {
+    List<int> parts(String value) => value
+        .split(RegExp(r'[^0-9]+'))
+        .where((part) => part.isNotEmpty)
+        .map((part) => int.tryParse(part) ?? 0)
+        .toList();
+    final left = parts(a);
+    final right = parts(b);
+    final length = left.length > right.length ? left.length : right.length;
+    for (var i = 0; i < length; i++) {
+      final l = i < left.length ? left[i] : 0;
+      final r = i < right.length ? right[i] : 0;
+      if (l != r) return l.compareTo(r);
+    }
+    return a.compareTo(b);
   }
 
   _FlutterRelease _selectFlutterRelease(
@@ -645,14 +808,18 @@ class ToolchainInstaller {
   // ---------- 日志/下载桥接 ----------
 
   Stream<String> _downloadLogged({
-    required String? url,
+    required List<String> urls,
     required String destination,
     String? sha256,
     int? expectedSize,
     required String label,
     bool useCache = true,
   }) async* {
-    if (url == null) {
+    final candidates = <String>[
+      for (final url in urls)
+        if (url.isNotEmpty) url,
+    ];
+    if (candidates.isEmpty) {
       final cached = File(destination);
       if (!cached.existsSync() ||
           cached.lengthSync() < Downloader.minimumCompleteSize) {
@@ -662,11 +829,11 @@ class ToolchainInstaller {
       return;
     }
     final lines = StreamController<String>();
-    String? digest;
+    ({String url, String sha256})? result;
     Object? failure;
     final future = downloader
-        .download(
-          url,
+        .downloadFirst(
+          candidates,
           destination,
           sha256: sha256,
           expectedSize: expectedSize,
@@ -679,7 +846,7 @@ class ToolchainInstaller {
         )
         .then<void>(
           (value) {
-            digest = value;
+            result = value;
           },
           onError: (Object error) {
             failure = error;
@@ -697,8 +864,10 @@ class ToolchainInstaller {
       if (error is ToolchainException) throw error;
       throw DownloadException('下载 $label 失败', cause: error);
     }
-    if (digest != null) {
-      yield '$label 下载完成（SHA-256 ${digest!.substring(0, 12)}…）';
+    final downloaded = result;
+    if (downloaded != null) {
+      yield '$label 下载完成（来源 ${downloaded.url}'
+          '，SHA-256 ${downloaded.sha256.substring(0, 12)}…）';
     }
   }
 
@@ -706,8 +875,9 @@ class ToolchainInstaller {
 
   String _platformPackage(String platform) {
     final value = platform.trim();
-    if (value.isEmpty)
+    if (value.isEmpty) {
       return 'platforms;android-${ToolchainLayout.defaultPlatformVersion}';
+    }
     return value.startsWith('android-')
         ? 'platforms;$value'
         : 'platforms;android-$value';
@@ -783,6 +953,29 @@ class ToolchainInstaller {
           .join()
           .timeout(const Duration(seconds: 30));
       return jsonDecode(text);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// 默认纯文本获取（JDK 目录镜像的 HTML 列表页）。
+  static Future<String> defaultFetchText(Uri uri) async {
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 20);
+    try {
+      final request = await client.getUrl(uri);
+      request.headers.set('User-Agent', 'FlitDesk/1.0');
+      final response = await request.close().timeout(
+        const Duration(seconds: 40),
+      );
+      if (response.statusCode >= 400) {
+        await response.drain<void>();
+        throw HttpException('HTTP ${response.statusCode}', uri: uri);
+      }
+      return await response
+          .transform(utf8.decoder)
+          .join()
+          .timeout(const Duration(seconds: 40));
     } finally {
       client.close(force: true);
     }

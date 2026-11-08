@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flit/core/host_platform.dart';
 import 'package:flit/features/run/web_runner.dart';

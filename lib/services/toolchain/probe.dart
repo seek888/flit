@@ -222,9 +222,7 @@ class ToolchainProbe {
         _nonEmptyFile(layout.sdkManagerBat) &&
         _nonEmptyDir(layout.join(layout.cmdlineToolsDir, 'lib'));
 
-    final flutter =
-        _nonEmptyFile(layout.flutterBat) &&
-        _nonEmptyFile(layout.flutterVersionFile);
+    final flutter = _flutterInstalled();
     if (flutter) {
       final version = readFlutterVersion();
       if (version != null && version.isNotEmpty) versions['flutter'] = version;
@@ -234,7 +232,7 @@ class ToolchainProbe {
     if (ndk != null) versions['ndk'] = ndk.version;
     final cmake = _versionedComponent(
       layout.cmakeDir,
-      requiredRelative: layout.join('bin', 'cmake${_exe}'),
+      requiredRelative: layout.join('bin', 'cmake$_exe'),
     );
     if (cmake != null) versions['cmake'] = cmake.version;
 
@@ -305,9 +303,33 @@ class ToolchainProbe {
   }
 
   String? readFlutterVersion() {
-    final text = _readText(layout.flutterVersionFile);
-    final trimmed = text?.trim();
-    return trimmed == null || trimmed.isEmpty ? null : trimmed;
+    // 旧布局：`<flutter>/version`；新布局：`bin/cache/flutter.version.json`
+    // （Flutter 3.x 后期移除了 version 文件，只认旧的会把已装 SDK 判成缺失）。
+    final legacy = _readText(layout.flutterVersionFile)?.trim();
+    if (legacy != null && legacy.isNotEmpty) return legacy;
+    final json = _readText(layout.flutterVersionJson);
+    if (json == null) return null;
+    try {
+      final data = jsonDecode(json);
+      if (data is Map) {
+        final version = data['frameworkVersion'] ?? data['flutterVersion'];
+        if (version is String && version.trim().isNotEmpty) {
+          return version.trim();
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Flutter SDK 是否完整：`bin/flutter.bat` + 版本信息或 SDK 自带产物。
+  ///
+  /// zip 里本来就带 `bin/cache/dart-sdk` 与 `flutter_tools.snapshot`，因此
+  /// 未预热也能判定为已安装；预热只影响 `flutter_warmup` 这个独立 marker。
+  bool _flutterInstalled() {
+    if (!_nonEmptyFile(layout.flutterBat)) return false;
+    if (readFlutterVersion() != null) return true;
+    return _nonEmptyFile(layout.flutterDartExe) ||
+        _nonEmptyFile(layout.flutterToolsSnapshot);
   }
 
   String? readPkgRevision(String directory) => _readPkgRevision(directory);
@@ -340,7 +362,7 @@ class ToolchainProbe {
       case 'cmake':
         return _versionedComponent(
           layout.cmakeDir,
-          requiredRelative: layout.join('bin', 'cmake${_exe}'),
+          requiredRelative: layout.join('bin', 'cmake$_exe'),
         )?.version;
       case 'git':
         return readGitMarkerVersion() ??

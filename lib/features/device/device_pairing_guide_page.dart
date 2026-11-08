@@ -5,7 +5,6 @@ import 'package:flit_device/flit_device.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../core/host_platform.dart';
 import '../../core/page_layout.dart';
 import '../../core/theme.dart';
 import '../../services/shell.dart';

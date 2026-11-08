@@ -10,6 +10,11 @@ import 'process.dart';
 /// 绕开 `.bat`：`sdkmanager.bat` 在路径含空格/`&` 时会被 shell 拆参数，
 /// 所以直接用 `java.exe -classpath <jar> <主类> --sdk_root=...`，
 /// java.exe 的参数不经过 shell，`C:\Users\Zhang San\...`、`A&B` 都安全。
+///
+/// classpath jar 的名字随 cmdline-tools 版本变化：
+/// - 新版（build 13114758 起）：`lib/sdkmanager-classpath.jar`
+/// - 旧版：`lib/sdkmanager.jar`
+/// 这里按「先新后旧」解析，避免升级 cmdline-tools 后整条 SDK 阶段失效。
 class SdkManager {
   SdkManager({required this.layout, ToolchainProcessGateway? process})
     : process = process ?? const SystemToolchainProcess();
@@ -17,17 +22,34 @@ class SdkManager {
   final ToolchainLayout layout;
   final ToolchainProcessGateway process;
 
+  /// 实际可用的 classpath jar；两个名字都不存在时返回 null。
+  String? get classpathJar {
+    for (final path in <String>[
+      layout.sdkManagerClasspathJar,
+      layout.sdkManagerLegacyJar,
+    ]) {
+      final file = File(path);
+      try {
+        if (file.existsSync() && file.lengthSync() > 0) return path;
+      } catch (_) {}
+    }
+    return null;
+  }
+
   /// `sdkmanager.bat` 的等价 argv 前缀（不含子命令）。
+  ///
+  /// `-Dcom.android.sdklib.toolsdir` 与官方 `.bat` 一致：sdkmanager 用它
+  /// 定位自身的 `tools` 目录（许可文案、资源）。
   List<String> get commandPrefix => <String>[
+    '-Dcom.android.sdklib.toolsdir=${layout.cmdlineToolsDir}',
     '-classpath',
-    layout.sdkManagerJar,
+    classpathJar ?? layout.sdkManagerClasspathJar,
     'com.android.sdklib.tool.sdkmanager.SdkManagerCli',
     '--sdk_root=${layout.sdkDir}',
   ];
 
   bool get available =>
-      File(layout.javaExe).existsSync() &&
-      File(layout.sdkManagerJar).existsSync();
+      File(layout.javaExe).existsSync() && classpathJar != null;
 
   /// 组件 id + 版本 → sdkmanager 包名；不支持的返回 null。
   static String? packageFor(String id, String version) => switch (id) {
@@ -40,15 +62,22 @@ class SdkManager {
     _ => null,
   };
 
+  /// 当前生效的仓库源（日志与排障用）。
+  String get repositorySource => layout.androidSdkMirrored
+      ? '${layout.androidSdkRepo}（国内镜像）'
+      : '${ToolchainLayout.officialAndroidSdkBase}（官方源）';
+
   void _ensureAvailable() {
     if (!File(layout.javaExe).existsSync()) {
       throw SdkManagerException(
         'JDK 未安装或损坏：${layout.javaExe}。请先在开发环境页完成 JDK 安装。',
       );
     }
-    if (!File(layout.sdkManagerJar).existsSync()) {
+    if (classpathJar == null) {
       throw SdkManagerException(
-        'Android cmdline-tools 未安装：${layout.sdkManagerJar}。请先完成 Android SDK 阶段。',
+        'Android cmdline-tools 未安装或不完整：'
+        '${layout.cmdlineToolsDir}（缺少 lib/sdkmanager-classpath.jar）。'
+        '请先完成 Android SDK 阶段。',
       );
     }
   }
@@ -57,6 +86,7 @@ class SdkManager {
   Stream<String> install(List<String> packages) async* {
     _ensureAvailable();
     if (packages.isEmpty) return;
+    yield 'Android SDK 下载源：$repositorySource';
     yield 'sdkmanager --install ${packages.join(' ')}';
     final tail = <String>[];
     var exitCode = -1;

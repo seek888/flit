@@ -792,6 +792,11 @@ class EnvironmentController extends ChangeNotifier {
       // 界面状态只是上次快照。继续安装前复查，已被删除/损坏的阶段不能直接跳过。
       await _refreshStatus(c);
       if (_stopped(c)) return;
+      final desktopRunner = _desktopRunner;
+      if (isDesktopPlatform && desktopRunner != null) {
+        // 先说明本次会从哪里下载（国内镜像/官方源），排障时不用再猜。
+        _line(c, desktopRunner.toolchain.installer.downloadSourceSummary);
+      }
       // ① bootstrap: 下载自建产物(校验) → 原生全量解压(bash/软链/权限)
       if (!isDesktopPlatform && stages['bootstrap']!.state != 'DONE') {
         stages['bootstrap']!.state = 'RUNNING';

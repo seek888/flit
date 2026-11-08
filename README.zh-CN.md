@@ -67,6 +67,13 @@ Flit 支持编辑 Dart 代码、在设备上构建应用、通过无线 ADB 运�
 安装到 `%LOCALAPPDATA%\FlitDesk`，不修改系统 PATH 与注册表。GitHub 登录使用个人访问令牌（PAT），
 凭据保存在应用私有 git 配置里，之后私有仓库克隆与推送无需再次输入。
 
+桌面工具链的下载**默认全部走国内镜像**：Temurin JDK 17 走清华 TUNA 的 Adoptium 目录镜像、
+Android SDK（cmdline-tools 与各组件包）走腾讯云 AndroidSDK 镜像、Flutter 与 pub 走
+`flutter-io.cn`、GitHub 产物走加速前缀（多个公共代理自动回退）。任一镜像不可用会自动回退官方源，
+因此国内网络与直连环境都能装。换源方式（环境变量/`--dart-define`）与验证工具
+`tool/verify_toolchain.dart` 见
+[下载源与国内镜像](docs/windows-desktop.md#21-下载源与国内镜像默认即镜像失败自动回退)。
+
 安装、环境配置、PAT 登录、构建命令与已知限制见 [docs/windows-desktop.md](docs/windows-desktop.md)。
 
 ## 工作原理

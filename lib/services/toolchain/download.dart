@@ -182,6 +182,61 @@ class Downloader {
     return actual;
   }
 
+  /// 按顺序尝试多个候选地址（镜像在前、官方/直连在后），第一个成功即返回。
+  ///
+  /// 失败会删掉半截包再换下一个源；全部失败时抛出聚合异常，把每个源的
+  /// 失败原因带出来（国内常见「这个代理挂了、那个镜像还活着」，需要能解释）。
+  /// 缓存校验对每个候选都生效：缓存命中且摘要匹配时不会发起任何请求。
+  Future<({String url, String sha256})> downloadFirst(
+    List<String> urls,
+    String destination, {
+    String? sha256,
+    int? expectedSize,
+    void Function(int received, int total)? onProgress,
+    Duration idleTimeout = const Duration(seconds: 60),
+    Duration totalTimeout = const Duration(minutes: 45),
+    bool Function()? isCancelled,
+    bool useCache = true,
+    String? label,
+  }) async {
+    final attempted = <String>[];
+    final failures = <String>[];
+    Object? lastError;
+    for (final url in urls) {
+      if (url.isEmpty || attempted.contains(url)) continue;
+      attempted.add(url);
+      try {
+        final digest = await download(
+          url,
+          destination,
+          sha256: sha256,
+          expectedSize: expectedSize,
+          onProgress: onProgress,
+          idleTimeout: idleTimeout,
+          totalTimeout: totalTimeout,
+          isCancelled: isCancelled,
+          useCache: useCache,
+          label: label,
+        );
+        return (url: url, sha256: digest);
+      } catch (error) {
+        lastError = error;
+        failures.add('$url（${_shortError(error)}）');
+        _deleteQuietly(File('$destination.part'));
+      }
+    }
+    final name = label ?? _fileName(destination);
+    throw DownloadException(
+      '$name 的所有下载源均失败：\n${failures.join('\n')}',
+      cause: lastError,
+    );
+  }
+
+  static String _shortError(Object error) {
+    final text = error is DownloadException ? error.message : '$error';
+    return text.length > 120 ? '${text.substring(0, 120)}…' : text;
+  }
+
   Future<({int received, int total})> _writeBody({
     required String url,
     required IOSink sink,

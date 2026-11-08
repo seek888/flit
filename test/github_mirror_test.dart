@@ -33,4 +33,38 @@ void main() {
       expect(GithubMirror.wrap(prefixed), prefixed);
     }
   });
+
+  test('wrapWith an empty prefix is the direct connection', () {
+    const url = 'https://api.github.com/repos/a/b/releases/latest';
+    expect(GithubMirror.wrapWith('', url), url);
+  });
+
+  test('candidates keep mirrors first, direct last, and are deduped', () {
+    const url = 'https://api.github.com/repos/git-for-windows/git/releases/latest';
+    final candidates = GithubMirror.candidates(url);
+    expect(candidates, isNotEmpty);
+    expect(candidates.toSet().length, candidates.length);
+    expect(candidates.last, url, reason: '直连永远是最后兜底');
+    if (GithubMirror.prefix.isNotEmpty) {
+      expect(candidates.first, '${GithubMirror.prefix}$url');
+      expect(candidates.length, greaterThan(1));
+    } else {
+      expect(candidates, <String>[url]);
+    }
+  });
+
+  test('candidates leave non-GitHub URLs alone', () {
+    const url = 'https://dl.google.com/android/repository/repository2-3.xml';
+    expect(GithubMirror.candidates(url), <String>[url]);
+    expect(GithubMirror.candidates(''), isEmpty);
+  });
+
+  test('all built-in candidates are https and slash-terminated', () {
+    for (final candidate in GithubMirror.prefixes) {
+      expect(candidate, startsWith('https://'));
+      expect(candidate.endsWith('/'), isTrue, reason: candidate);
+      final uri = Uri.tryParse(candidate);
+      expect(uri, isNotNull, reason: candidate);
+    }
+  });
 }

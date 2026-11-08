@@ -1,6 +1,5 @@
 import 'package:flit/l10n/strings.dart';
 
-import '../core/host_platform.dart';
 import 'git_process.dart';
 import 'shell.dart';
 
@@ -70,7 +69,7 @@ class GitRepo {
   /// 需要 source env.sh，由 [Shell.exec] 侧处理）。
   static Future<GitResult> androidShell(String root, List<String> args) async {
     final result = await Shell.instance.exec(
-      '${terminalEnvSource}${androidCommand(root, args)}',
+      '$terminalEnvSource${androidCommand(root, args)}',
       timeoutMs: 60000,
     );
     return (

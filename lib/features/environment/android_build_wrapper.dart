@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../services/desktop_toolchain.dart';
 import '../../services/shell.dart';
+import '../../services/toolchain/gradle_wrapper.dart';
 import '../terminal/run_sessions.dart';
 import 'android_component_probe.dart';
 import 'setup_runner.dart';
@@ -56,6 +57,7 @@ class AndroidBuildWrapper {
     AndroidComponentCheck? check,
     AndroidComponentProbe? componentProbe,
     Future<void> Function(List<AndroidComponent>)? install,
+    GradleWrapperCache? gradleCache,
   }) : catalog = catalog ?? ToolchainCatalog(),
        _probe =
            probe ??
@@ -63,7 +65,8 @@ class AndroidBuildWrapper {
        _requirements = requirements,
        _checkOverride = check,
        _componentProbe = componentProbe,
-       _installOverride = install;
+       _installOverride = install,
+       _gradleCache = gradleCache;
 
   final RunSessions executions;
   final ToolchainCatalog catalog;
@@ -76,6 +79,9 @@ class AndroidBuildWrapper {
 
   /// 桌面端组件补齐（默认走 D3 的 `DesktopToolchain.ensureComponents`）。
   final Future<void> Function(List<AndroidComponent>)? _installOverride;
+
+  /// 桌面端 Gradle 发行版缓存（默认私有 `gradle-home`；单测可注入）。
+  final GradleWrapperCache? _gradleCache;
   int _generation = 0;
   bool _closed = false;
 
@@ -114,8 +120,26 @@ class AndroidBuildWrapper {
       throw StateError(strings.requiredComponentsAreMissingBuildNotStarted);
     }
     if (!current()) throw StateError(strings.projectClosedOrTaskCancelled);
+    // 桌面端先把工程需要的 Gradle 发行版落到私有 gradle-home（国内镜像），
+    // 否则 gradlew 会直连 services.gradle.org，国内网络下构建会秒失败。
+    final gradleLog = <String>[];
+    if (isDesktopPlatform) {
+      final cache =
+          _gradleCache ?? GradleWrapperCache(layout: ToolchainLayout.defaultLayout());
+      try {
+        await for (final line in cache.ensure(executions.projectPath)) {
+          gradleLog.add(line);
+        }
+      } catch (error) {
+        throw StateError('Gradle 发行版准备失败：$error');
+      }
+      if (!current()) throw StateError(strings.projectClosedOrTaskCancelled);
+    }
     final diagnostics = AndroidBuildDiagnostics();
     final session = await launch(configuration, diagnostics.add);
+    for (final line in gradleLog) {
+      session.log.line(line);
+    }
     // 返回首个会话，让控制台立即显示；后续流程的异常写回原控制台，不能成为
     // 未处理的异步异常。重试仍走 ProjectActions，成功产物只由真实构建报告。
     unawaited(

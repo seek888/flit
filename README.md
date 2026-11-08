@@ -71,6 +71,16 @@ and does not modify the system PATH or registry. GitHub sign-in uses a personal 
 that is kept in an app-private git configuration, so private clones and pushes work
 non-interactively.
 
+Every desktop download defaults to a **mainland-China mirror**: Temurin JDK 17 from the
+TUNA Adoptium directory mirror, Android SDK (cmdline-tools and package archives) from the
+Tencent Cloud AndroidSDK mirror, Flutter and pub from `flutter-io.cn`, and GitHub artifacts
+through acceleration prefixes with automatic multi-candidate fallback. If a mirror is
+unavailable the installer falls back to the official source, so both mirrored and direct
+networks work. See
+[Mirrors and download sources](docs/windows-desktop.md#21-下载源与国内镜像默认即镜像失败自动回退)
+for the source table, override environment variables and the `tool/verify_toolchain.dart`
+verification harness.
+
 See [docs/windows-desktop.md](docs/windows-desktop.md) for installation, environment setup,
 GitHub PAT sign-in, build commands and known limitations.
 
