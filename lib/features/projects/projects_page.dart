@@ -223,6 +223,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
       _pendingMarker = 'create';
     });
     final String command;
+    String? workingDirectory;
     if (isDesktopPlatform) {
       // 桌面端没有 bash：目录用 Dart 建，flutter/dart create 参数化直跑。
       try {
@@ -233,12 +234,22 @@ class _ProjectsPageState extends State<ProjectsPage> {
         return;
       }
       command = buildDesktopCreateCommand(params);
+      // 桌面命令串里没有 `cd`（目录已建好），PTY 必须显式在工程根里启动；
+      // 否则 cmd 会落在工具链 home，`flutter create my_app` 会在
+      // `<home>/my_app` 生成工程，而列表打开的是 `<home>/projects/my_app`
+      // ——正是「创建成功但工程目录是空的」。
+      workingDirectory = params.projectRoot;
     } else {
+      // Android 的命令串自带 `mkdir -p` + `cd`，不需要 PTY 工作目录。
       command = params.type == 'dart'
           ? buildDartCreateCommand(params)
           : buildFlutterCreateCommand(params);
     }
-    await _runTask(command, openOnSuccess: true);
+    await _runTask(
+      command,
+      openOnSuccess: true,
+      workingDirectory: workingDirectory,
+    );
   }
 
   /// 克隆 Git 仓库到工程根: 独立终端里跑, 完成后只刷新列表——
@@ -268,7 +279,11 @@ class _ProjectsPageState extends State<ProjectsPage> {
     await _runTask(buildGitCloneCommand(params), openOnSuccess: false);
   }
 
-  Future<void> _runTask(String command, {required bool openOnSuccess}) async {
+  Future<void> _runTask(
+    String command, {
+    required bool openOnSuccess,
+    String? workingDirectory,
+  }) async {
     final previous = _task;
     final task = ConsoleSession(
       title: _pendingMarker == 'clone'
@@ -294,7 +309,10 @@ class _ProjectsPageState extends State<ProjectsPage> {
             : 0,
       );
     });
-    final code = await task.run(command);
+    final code = await task.run(
+      command,
+      workingDirectory: workingDirectory,
+    );
     await watch.cancel();
     await _finishOp(
       code,

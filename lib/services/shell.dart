@@ -84,6 +84,32 @@ class Shell {
     return null;
   }
 
+  /// 以 argv 直接执行已知可执行文件（桌面端；`.bat/.cmd` 也安全）。
+  ///
+  /// 与 [exec] 的区别：不经过 shell 的命令串解析，因此路径/参数里的空格、
+  /// 引号不会被二次转义（`cmd /c "..."` 在 Windows 上会把内层引号变成
+  /// `\"`，见 [DesktopShell.runBinary]）。Android 端没有 argv 边界，
+  /// 退回引号化的 shell 命令。
+  Future<Map<dynamic, dynamic>> runBinary(
+    String executable,
+    List<String> arguments, {
+    int timeoutMs = 120000,
+  }) async {
+    if (isDesktopPlatform) {
+      return Map<dynamic, dynamic>.from(
+        await DesktopShell.instance.runBinary(
+          executable,
+          arguments,
+          timeoutMs: timeoutMs,
+        ),
+      );
+    }
+    return exec(
+      [executable, ...arguments].map(shQuote).join(' '),
+      timeoutMs: timeoutMs,
+    );
+  }
+
   /// 子进程可见的环境变量（替代 `env -0`）。
   Map<String, String> environment() {
     if (isDesktopPlatform) return DesktopShell.instance.environment();

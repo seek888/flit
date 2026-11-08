@@ -6,11 +6,15 @@ import 'errors.dart';
 
 /// 子进程边界：工具链各层只通过它 spawn 进程，单测注入 fake 即可完全离线。
 ///
-/// 关键点是 Windows 上的 `.bat/.cmd`：Dart 官方文档明确「批处理文件可能被
-/// 系统 shell 启动，参数按 shell 规则解析」。这里统一改成
-/// `cmd.exe /c <bat> <args...>`，比 `runInShell: true` 更可控；而真正对
-/// 引号敏感的 sdkmanager 走 `java.exe -classpath sdkmanager.jar`（见
-/// `sdk_manager.dart`），完全不经过 shell。
+/// 关键点是 Windows 上的 `.bat/.cmd`：**直接以 argv 启动**（系统会交给
+/// cmd 处理，CreateProcess 负责引用），不要自己拼
+/// `cmd.exe /c "<bat>" <args...>`。Dart 会把传给 `cmd.exe` 的命令字符串
+/// 整体再包一层引号、内层 `"` 转义成 `\"`，cmd 于是把 `\"` 当成命令名的
+/// 一部分——`"D:\...\flutter.bat"` 会报「不是内部或外部命令」，带空格的
+/// 路径/参数更是直接坏掉（新建项目预检就栽在这里）。
+///
+/// 真正对引号敏感的 sdkmanager 走 `java.exe -classpath sdkmanager.jar`
+/// （见 `sdk_manager.dart`），完全不经过 shell。
 abstract class ToolchainProcessGateway {
   /// 一次性执行（短命令：探测/版本读取）。
   Future<ProcessResult> run(
@@ -43,28 +47,22 @@ abstract class ToolchainProcessGateway {
   });
 }
 
-class SystemToolchainProcess implements ToolchainProcessGateway {
-  const SystemToolchainProcess({bool? windows}) : _windows = windows;
-
-  final bool? _windows;
-
-  bool get _isWindows => _windows ?? Platform.isWindows;
-
-  ({String executable, List<String> arguments}) _invocation(
-    String executable,
-    List<String> arguments,
-  ) {
-    final lower = executable.toLowerCase();
-    final isBatch =
-        _isWindows && (lower.endsWith('.bat') || lower.endsWith('.cmd'));
-    if (isBatch) {
-      return (
-        executable: 'cmd.exe',
-        arguments: <String>['/c', executable, ...arguments],
-      );
-    }
-    return (executable: executable, arguments: arguments);
+/// 解码子进程输出。
+///
+/// 工具链命令（flutter / sdkmanager / git）输出 UTF-8（`•`、中文、路径都
+/// 是 UTF-8 字节）；cmd 内建命令与部分 OEM 工具输出系统代码页。先按 UTF-8
+/// 严格解码，失败再退回 [SystemEncoding]，避免版本行出现 `鈥?` 这类乱码。
+String decodeProcessOutput(List<int> bytes) {
+  if (bytes.isEmpty) return '';
+  try {
+    return utf8.decode(bytes);
+  } on FormatException {
+    return const SystemEncoding().decode(bytes);
   }
+}
+
+class SystemToolchainProcess implements ToolchainProcessGateway {
+  const SystemToolchainProcess();
 
   @override
   Future<ProcessResult> run(
@@ -74,25 +72,38 @@ class SystemToolchainProcess implements ToolchainProcessGateway {
     Duration timeout = const Duration(seconds: 25),
     String? workingDirectory,
   }) async {
-    final invocation = _invocation(executable, arguments);
+    final Process process;
     try {
-      return await Process.run(
-        invocation.executable,
-        invocation.arguments,
+      process = await Process.start(
+        executable,
+        arguments,
         environment: environment,
         workingDirectory: workingDirectory,
-        stdoutEncoding: const SystemEncoding(),
-        stderrEncoding: const SystemEncoding(),
-      ).timeout(timeout);
-    } on TimeoutException {
-      throw ToolchainException('命令执行超时（${timeout.inSeconds} 秒）：$executable');
+      );
     } on ProcessException catch (error) {
       throw ToolchainException(
         '无法启动命令：$executable（${error.message}）',
         cause: error,
       );
     }
+    final stdoutBytes = _collect(process.stdout);
+    final stderrBytes = _collect(process.stderr);
+    try {
+      final exitCode = await process.exitCode.timeout(timeout);
+      return ProcessResult(
+        process.pid,
+        exitCode,
+        decodeProcessOutput(await stdoutBytes),
+        decodeProcessOutput(await stderrBytes),
+      );
+    } on TimeoutException {
+      _kill(process);
+      throw ToolchainException('命令执行超时（${timeout.inSeconds} 秒）：$executable');
+    }
   }
+
+  static Future<List<int>> _collect(Stream<List<int>> stream) =>
+      stream.fold<List<int>>(<int>[], (all, chunk) => all..addAll(chunk));
 
   @override
   Future<int> runWithStdin(
@@ -103,12 +114,11 @@ class SystemToolchainProcess implements ToolchainProcessGateway {
     Duration timeout = const Duration(minutes: 5),
     String? workingDirectory,
   }) async {
-    final invocation = _invocation(executable, arguments);
     final Process process;
     try {
       process = await Process.start(
-        invocation.executable,
-        invocation.arguments,
+        executable,
+        arguments,
         environment: environment,
         workingDirectory: workingDirectory,
       );
@@ -153,12 +163,11 @@ class SystemToolchainProcess implements ToolchainProcessGateway {
     String? workingDirectory,
     void Function(int exitCode)? onClosed,
   }) async* {
-    final invocation = _invocation(executable, arguments);
     final Process process;
     try {
       process = await Process.start(
-        invocation.executable,
-        invocation.arguments,
+        executable,
+        arguments,
         environment: environment,
         workingDirectory: workingDirectory,
       );

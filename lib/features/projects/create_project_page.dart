@@ -187,8 +187,12 @@ class _CreateProjectPageState extends State<CreateProjectPage> {
   }
 
   /// 预检: 桌面端直接问 Shell.hasBinary/which（`command -v` 的 shim 在
-  /// Windows 上对 .bat 会拼错后缀，不可靠），再用 cmd 跑一次 --version
+  /// Windows 上对 .bat 会拼错后缀，不可靠），再用 argv 跑一次 --version
   /// 证明"能找到且能执行"。
+  ///
+  /// 不要把可执行文件路径拼进 `cmd /c "<path>" --version`：Dart 会把整条
+  /// 命令再包一层引号、内层 `"` 转义成 `\"`，cmd 于是报
+  /// 「不是内部或外部命令」（`D:\...\flutter.bat` 就是这么失败的）。
   Future<(_ToolCheck, String)> _runToolCheck(String tool) async {
     if (!isDesktopPlatform) {
       final result = await Shell.instance.exec(
@@ -204,15 +208,12 @@ class _CreateProjectPageState extends State<CreateProjectPage> {
         (result['output'] as String? ?? '').trim(),
       );
     }
-    if (!Shell.instance.hasBinary(tool)) {
-      return (_ToolCheck.missing, '');
-    }
-    // which() 在部分平台会把 .bat 拼成 .exe；拿不到真实文件就退回工具名，
-    // 交给 cmd 的 PATHEXT / PATH 解析（flutter.bat 可执行）。
-    var exe = Shell.instance.which(tool) ?? tool;
-    if (!File(exe).existsSync()) exe = tool;
-    final result = await Shell.instance.exec(
-      '${quoteForCmd(exe)} --version',
+    // which() 返回真实存在的文件路径（PATH / 私有工具链），拿不到就是没装。
+    final exe = Shell.instance.which(tool);
+    if (exe == null) return (_ToolCheck.missing, '');
+    final result = await Shell.instance.runBinary(
+      exe,
+      const <String>['--version'],
       timeoutMs: 120000,
     );
     final output = (result['output'] as String? ?? '').trim();

@@ -5,7 +5,6 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
-import '../../core/host_platform.dart';
 import '../../services/desktop_toolchain.dart';
 import '../../services/paths.dart';
 import '../../services/shell.dart';
@@ -31,12 +30,13 @@ Future<bool> ensureWebPlatform(String projectPath) async {
   if (isDesktopPlatform) {
     final toolchain = DesktopToolchain();
     if (!File(toolchain.flutterExe).existsSync()) return false;
+    // 直接以 argv 启动 `.bat`（不要 runInShell：Windows 上它会把路径与参数
+    // 重新拼进 cmd 命令行，工具链 home 含空格时会被拼坏）。
     final result = await Process.run(
       toolchain.flutterExe,
       const ['create', '--platforms=web', '.'],
       workingDirectory: projectPath,
       environment: toolchain.childEnvironment,
-      runInShell: isWindowsPlatform,
       stdoutEncoding: const SystemEncoding(),
       stderrEncoding: const SystemEncoding(),
     );

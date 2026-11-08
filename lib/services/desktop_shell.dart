@@ -69,6 +69,38 @@ class DesktopShell {
   /// PATH / 私有工具链里是否有这个可执行文件（替代 `command -v`）。
   bool hasBinary(String name) => which(name) != null;
 
+  /// 以 argv 直接运行一个已知可执行文件（`.bat/.cmd` 也走这里）。
+  ///
+  /// 不要把它拼成 `cmd /c "<path>" --version` 这类命令字符串：Dart 会把
+  /// 传给 `cmd.exe` 的参数整体再包一层引号、内层 `"` 转义成 `\"`，cmd
+  /// 于是把 `\"` 当成命令名的一部分，报「不是内部或外部命令」——新建
+  /// 项目预检里的 flutter.bat 就是这样失败的。直接传 argv 时由系统
+  /// 负责引用（见 [ToolchainProcessGateway] 的说明）。
+  Future<Map<String, dynamic>> runBinary(
+    String executable,
+    List<String> arguments, {
+    int timeoutMs = 120000,
+    String? workingDirectory,
+  }) async {
+    try {
+      final result = await toolchain.process.run(
+        executable,
+        arguments,
+        environment: environment(),
+        timeout: Duration(milliseconds: timeoutMs),
+        workingDirectory: workingDirectory,
+      );
+      return <String, dynamic>{
+        'exitCode': result.exitCode,
+        'output': '${result.stdout}${result.stderr}',
+      };
+    } on ToolchainException catch (error) {
+      return <String, dynamic>{'exitCode': -1, 'output': error.message};
+    } catch (error) {
+      return <String, dynamic>{'exitCode': -1, 'output': '$error'};
+    }
+  }
+
   /// 找可执行文件绝对路径（找不到返回 null）。
   ///
   /// 只查已知 bin 目录 + PATH，不递归扫整棵 1 GB 的 SDK/Flutter 树；
